@@ -543,12 +543,16 @@ describe.skipIf(chromiumPath === undefined)(
       const timeoutMs = 1000;
       const launch = chromium.launch.bind(chromium);
       const launches = vi.spyOn(chromium, 'launch');
+      // The context the slow browser finally creates, long after the deadline.
+      let created: Promise<unknown> | undefined;
       launches.mockImplementation(async (...args) => {
         const browser = await launch(...args);
         const newContext = browser.newContext.bind(browser);
         browser.newContext = async (...options) => {
           await delay(timeoutMs * 3);
-          return newContext(...options);
+          const creating = newContext(...options);
+          created = creating;
+          return creating;
         };
         return browser;
       });
@@ -562,6 +566,8 @@ describe.skipIf(chromiumPath === undefined)(
 
         expect(Date.now() - started).toBeLessThan(timeoutMs * 2);
         const browser = await launches.mock.results[0]?.value;
+        await expect.poll(() => created, { timeout: timeoutMs * 6 }).toBeDefined();
+        await created;
         await expect.poll(() => browser?.contexts().length, { timeout: 6000 }).toBe(0);
       } finally {
         launches.mockRestore();
