@@ -94,12 +94,63 @@ export function mermaidLaunchOptions(executablePath: string | undefined): Launch
 }
 
 // The second network layer, per render: offline, no service workers, and a
-// request filter (installed in `draw`) that aborts everything but PAGE_URL.
+// request filter (installed by openMermaidContext) that aborts everything but
+// PAGE_URL.
 export const MERMAID_CONTEXT_OPTIONS = {
   acceptDownloads: false,
   offline: true,
   serviceWorkers: 'block',
 } as const satisfies BrowserContextOptions;
+
+// A context with both per-render settings: MERMAID_CONTEXT_OPTIONS and a
+// request filter that answers PAGE_URL from memory and aborts every other
+// request.
+export async function openMermaidContext(browser: Browser): Promise<BrowserContext> {
+  const context = await browser.newContext(MERMAID_CONTEXT_OPTIONS);
+  try {
+    await context.route('**/*', (route) =>
+      route.request().url() === PAGE_URL
+        ? route.fulfill({ body: PAGE_HTML, contentType: 'text/html' })
+        : route.abort('blockedbyclient'),
+    );
+    return context;
+  } catch (error) {
+    await closeQuietly(context);
+    throw error;
+  }
+}
+
+// Loads the bundle into a page of `context` and draws each text. Null when
+// the bundle does not define mermaid.
+async function drawIn(
+  context: BrowserContext,
+  script: string,
+  texts: readonly string[],
+): Promise<(string | null)[] | null> {
+  const page = await context.newPage();
+  await page.goto(PAGE_URL);
+  await page.addScriptTag({ content: script });
+  return page.evaluate(
+    async ({ prefix, diagrams }) => {
+      // Set by the bundle above; the page holds nothing else.
+      const mermaid: Mermaid | undefined = Reflect.get(globalThis, 'mermaid');
+      if (typeof mermaid?.render !== 'function') {
+        return null;
+      }
+      mermaid.initialize({ securityLevel: 'strict', startOnLoad: false, theme: 'dark' });
+      return Promise.all(
+        diagrams.map(async (text, index) => {
+          try {
+            return (await mermaid.render(`${prefix}${String(index)}`, text)).svg;
+          } catch {
+            return null;
+          }
+        }),
+      );
+    },
+    { diagrams: [...texts], prefix: DIAGRAM_ID_PREFIX },
+  );
+}
 
 function defaultReport(message: string): void {
   process.stderr.write(`${message}\n`);
@@ -215,63 +266,36 @@ export function createMermaidRenderer({
     }
   }
 
+  // Draws in a fresh context, raced as a whole against the signal. Closing
+  // the context alone cannot stop a drawing: Playwright leaves a newPage
+  // call pending forever when its context closes mid-call. So an abort
+  // rejects at once, and the context is closed in the background, which ends
+  // every step that can end; a step left pending holds only the closed
+  // context.
   async function draw(
     launched: Browser,
     script: string,
     texts: readonly string[],
     signal: AbortSignal | undefined,
   ): Promise<(string | null)[] | null> {
-    const creating = launched.newContext(MERMAID_CONTEXT_OPTIONS);
-    let context: BrowserContext;
+    const opening = openMermaidContext(launched);
+    async function drawAndClose(): Promise<(string | null)[] | null> {
+      const context = await opening;
+      try {
+        return await drawIn(context, script, texts);
+      } finally {
+        await closeQuietly(context);
+      }
+    }
+    const drawing = drawAndClose();
     try {
-      context = await untilAborted(creating, signal);
+      return await untilAborted(drawing, signal);
     } catch (error) {
-      // Given up on (the signal aborted): close the context once it exists.
-      void closeWhenCreated(creating);
+      if (signal?.aborted === true) {
+        void ignoreFailure(drawing);
+        void closeWhenCreated(opening);
+      }
       throw error;
-    }
-    // Closing the context makes whatever step is in flight reject. A signal
-    // that aborted before the listener was added never calls it, so that
-    // case closes the context straight away.
-    const abort = (): void => {
-      void closeQuietly(context);
-    };
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted === true) {
-      abort();
-    }
-    try {
-      await context.route('**/*', (route) =>
-        route.request().url() === PAGE_URL
-          ? route.fulfill({ body: PAGE_HTML, contentType: 'text/html' })
-          : route.abort('blockedbyclient'),
-      );
-      const page = await context.newPage();
-      await page.goto(PAGE_URL);
-      await page.addScriptTag({ content: script });
-      return await page.evaluate(
-        async ({ prefix, diagrams }) => {
-          // Set by the bundle above; the page holds nothing else.
-          const mermaid: Mermaid | undefined = Reflect.get(globalThis, 'mermaid');
-          if (typeof mermaid?.render !== 'function') {
-            return null;
-          }
-          mermaid.initialize({ securityLevel: 'strict', startOnLoad: false, theme: 'dark' });
-          return Promise.all(
-            diagrams.map(async (text, index) => {
-              try {
-                return (await mermaid.render(`${prefix}${String(index)}`, text)).svg;
-              } catch {
-                return null;
-              }
-            }),
-          );
-        },
-        { diagrams: [...texts], prefix: DIAGRAM_ID_PREFIX },
-      );
-    } finally {
-      signal?.removeEventListener('abort', abort);
-      await closeQuietly(context);
     }
   }
 

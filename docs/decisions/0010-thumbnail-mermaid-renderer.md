@@ -57,18 +57,29 @@ so it cannot run without network access.
     memory and aborts every other request. The page has a real origin because Chromium crashes when
     a sandboxed srcdoc frame is added to an `about:blank` page.
 
-  Unit tests pin the settings of both layers. The renderer tests load hostile bundles that try
-  fetch, WebSocket, workers, an iframe, a sandboxed frame, a popup, and WebRTC. Each probe confirms
-  that it ran, and the tests assert that nothing arrives. A Chromium NetLog test asserts that a TURN
-  server hostname causes no DNS transaction. When this decision was recorded, those
-  tests also passed with either layer removed, on both full Chromium and `chromium-headless-shell`.
+  The launch layer alone stops HTTP, WebSocket, WebRTC, and DNS. The context layer alone stops
+  HTTP, WebSocket, and WebRTC; DNS depends on the launch layer only. Chromium adds a third, incidental
+  barrier: it refuses requests from this public-looking page to loopback addresses.
+
+  The tests check this on both full Chromium and `chromium-headless-shell`:
+  - Unit tests pin the settings of both layers.
+  - Hostile bundles try fetch, WebSocket, workers, an iframe, a sandboxed frame, a popup, and
+    WebRTC. Each probe confirms that it ran, and nothing arrives: with both layers, with the launch
+    layer alone, and with the context layer alone.
+  - With the context online, every request but the page's own fails at the request filter.
+  - A Chromium NetLog test asserts that a TURN server hostname causes no DNS transaction. This
+    guards full Chromium, the build that looks the name up; the headless shell makes no lookup.
 - **The drawings go back to the script-off page.** The renderer replaces each fence with its SVG
   through the isolated world, then takes the screenshot. A script in that markup does not run,
   because the page has scripts off. Any load the SVG declares goes through the artifact browser's
   existing fences. A diagram that Mermaid cannot parse keeps its source.
-- **One deadline.** The render's deadline also closes a Mermaid drawing that is still running, and
-  stops waiting for the second browser's first launch. A deadline that passes fails the render. A
-  launch cut off this way goes on in the background, and the next render uses it.
+- **One deadline.** The render's deadline also covers the Mermaid step, and a deadline that passes
+  fails the render:
+  - The renderer stops waiting for the second browser's first launch. A launch cut off this way
+    goes on in the background, and the next render uses it.
+  - The drawing is raced as a whole against the deadline, and its context is closed in the
+    background. Closing the context alone cannot stop it, because Playwright leaves a `newPage`
+    call pending forever when its context closes during the call.
 - **Degrades to source.** If the bundle file is missing or empty, the bundle does not define
   `mermaid`, or the second Chromium fails to launch, the renderer reports this once and stops
   trying. If one drawing fails for another reason, such

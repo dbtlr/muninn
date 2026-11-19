@@ -11,12 +11,16 @@ import { promisify } from 'node:util';
 import type { ServerType } from '@hono/node-server';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import type { Browser, Page } from 'playwright-core';
+import { chromium } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 
+import { BASE_CHROMIUM_ARGS } from './chromium-launch.js';
 import {
   createMermaidRenderer,
   MERMAID_CONTEXT_OPTIONS,
   mermaidLaunchOptions,
+  openMermaidContext,
   untilAborted,
 } from './mermaid-renderer.js';
 import { resolveChromiumPath } from './playwright-renderer.js';
@@ -269,8 +273,40 @@ describe.skipIf(chromiumPath === undefined)(
       WARM_UP_TIMEOUT_MS,
     );
 
+    it('stops a render whose signal aborts at any point while the page opens', async () => {
+      const stuck = join(scratch, 'stuck.js');
+      await writeFile(
+        stuck,
+        'globalThis.mermaid={initialize(){},render:()=>new Promise(()=>{})};',
+        'utf8',
+      );
+      const mermaid = createMermaidRenderer({ executablePath: chromiumPath, scriptPath: stuck });
+      try {
+        // Warm the browser, so each abort below lands while a context and
+        // page are being opened rather than during the launch.
+        await expect(
+          mermaid.render(['graph TD; A-->B'], AbortSignal.timeout(1000)),
+        ).rejects.toThrow(/timed out|aborted|closed/u);
+        const outcomes = await Promise.all(
+          [0, 2, 5, 10, 15, 20, 30, 50, 80].map(async (delayMs) => {
+            const started = Date.now();
+            await mermaid
+              .render(['graph TD; A-->B'], AbortSignal.timeout(delayMs))
+              .catch(() => null);
+            return Date.now() - started - delayMs;
+          }),
+        );
+
+        // Every render gives up within moments of its own abort.
+        expect(outcomes.filter((lateMs) => lateMs > 1000)).toEqual([]);
+      } finally {
+        await mermaid.close();
+      }
+    });
+
     describe('with a bundle that tries to reach the network', () => {
       let neighbour: ServerType;
+      let neighbourUrl: string;
       let neighbourHits = 0;
       let neighbourUpgrades = 0;
       let udp: Socket;
@@ -284,7 +320,6 @@ describe.skipIf(chromiumPath === undefined)(
           neighbourHits += 1;
           return c.text('INTERNAL');
         });
-        let neighbourUrl: string;
         ({ server: neighbour, url: neighbourUrl } = await listen(app));
         neighbour.on('upgrade', (_request, socket) => {
           neighbourUpgrades += 1;
@@ -347,6 +382,93 @@ describe.skipIf(chromiumPath === undefined)(
       afterAll(async () => {
         await promisify(neighbour.close.bind(neighbour))();
         udp.close();
+      });
+
+      // Runs the hostile bundle in `page` and waits for ICE's STUN retries.
+      async function runHostileBundle(page: Page): Promise<void> {
+        await page.addScriptTag({ path: hostile });
+        await expect(page.evaluate(() => 'mermaid' in globalThis)).resolves.toBe(true);
+        // ICE retries STUN at ~0.3s, 0.5s, 1s; wait long enough to catch one.
+        await delay(1200);
+      }
+
+      it('refuses every request with only the launch layer in place', async () => {
+        const browser: Browser = await chromium.launch(mermaidLaunchOptions(chromiumPath));
+        try {
+          const page = await (await browser.newContext()).newPage();
+          await page.setContent('<!doctype html><body></body>');
+          await runHostileBundle(page);
+
+          expect(neighbourHits).toBe(0);
+          expect(neighbourUpgrades).toBe(0);
+          expect(udpPackets).toBe(0);
+        } finally {
+          await browser.close();
+        }
+      });
+
+      // DNS is the launch layer's alone (see the NetLog test); this layer
+      // covers HTTP, WebSocket, and WebRTC.
+      it('refuses every request with only the context layer in place', async () => {
+        const browser: Browser = await chromium.launch({
+          args: BASE_CHROMIUM_ARGS,
+          ...(chromiumPath === undefined ? {} : { executablePath: chromiumPath }),
+        });
+        try {
+          const page = await (await openMermaidContext(browser)).newPage();
+          await page.goto('http://mermaid.invalid/');
+          await runHostileBundle(page);
+
+          expect(neighbourHits).toBe(0);
+          expect(neighbourUpgrades).toBe(0);
+          expect(udpPackets).toBe(0);
+        } finally {
+          await browser.close();
+        }
+      });
+
+      // The request filter on its own: with the context back online, every
+      // request but the page's own is aborted by the filter (Chromium reports
+      // that as ERR_BLOCKED_BY_CLIENT). Counting hits would prove nothing
+      // here: Chromium also refuses requests from this public-looking page to
+      // loopback, and WebSocket and WebRTC are not routed at all.
+      it('aborts every request but the page itself at the request filter', async () => {
+        const browser: Browser = await chromium.launch({
+          args: BASE_CHROMIUM_ARGS,
+          ...(chromiumPath === undefined ? {} : { executablePath: chromiumPath }),
+        });
+        try {
+          const context = await openMermaidContext(browser);
+          await context.setOffline(false);
+          const failures = new Map<string, string>();
+          context.on('requestfailed', (request) => {
+            failures.set(new URL(request.url()).pathname, request.failure()?.errorText ?? '');
+          });
+          const page = await context.newPage();
+          await page.goto('http://mermaid.invalid/');
+          await page.evaluate((url) => {
+            void fetch(`${url}/fetch`).catch(() => null);
+            const image = new Image();
+            image.src = `${url}/img`;
+            navigator.sendBeacon(`${url}/beacon`, 'x');
+            const frame = document.createElement('iframe');
+            frame.src = `${url}/frame`;
+            document.body.append(frame);
+          }, neighbourUrl);
+          await delay(1000);
+
+          // Chromium appends `.Inspector` to some of these.
+          const blockedByFilter = expect.stringMatching(/^net::ERR_BLOCKED_BY_CLIENT/u);
+          expect(Object.fromEntries(failures)).toEqual({
+            '/beacon': blockedByFilter,
+            '/fetch': blockedByFilter,
+            '/frame': blockedByFilter,
+            '/img': blockedByFilter,
+          });
+          expect(neighbourHits).toBe(0);
+        } finally {
+          await browser.close();
+        }
       });
 
       it('refuses every request the page makes', async () => {
