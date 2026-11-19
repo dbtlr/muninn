@@ -16,3 +16,4 @@ and do not bind anything.
 | [0007](0007-rename-to-muninn.md) | accepted | The product is named Muninn and its variables `MUNINN_*`; any `ARTIFACTS_*` variable stops startup, and an artifact keeps its name. |
 | [0008](0008-one-time-secrets.md) | accepted | One-time secrets are a separate entity, encrypted with a key Muninn never keeps; MCP returns single-use URLs and handles, never contents, and a view link alone reads a secret once. |
 | [0009](0009-cloudflare-workers-profile.md) | accepted | Muninn also runs as a Cloudflare Worker on D1, R2, and Static Assets, from the same package with a second entry point; the Worker always requires the owner password. |
+| [0010](0010-thumbnail-mermaid-renderer.md) | accepted | Thumbnails draw a Markdown artifact's Mermaid diagrams in a second Chromium that runs only Mermaid's bundle and has no network path; artifact pages keep scripts off. |

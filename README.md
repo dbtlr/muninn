@@ -312,8 +312,10 @@ needs no backup and no mount. Without a Chromium the server logs one notice and 
 placeholders.
 
 A preview is a screenshot of the static document: the render context has JavaScript disabled, so
-an artifact's scripts never run on the server host, and a Mermaid fence shows as its source in the
-thumbnail. Declarative loads (images, frames, stylesheets) may only GET from the server's own
+an artifact's scripts never run on the server host. A Markdown artifact's Mermaid diagrams are
+drawn in a second headless Chromium. That browser runs only Mermaid's own bundle, receives the
+diagram text as data, and has no network access at all (see
+[ADR-0010](docs/decisions/0010-thumbnail-mermaid-renderer.md)). Declarative loads (images, frames, stylesheets) may only GET from the server's own
 origin; everything else, including `/mcp` and anything on loopback or the container network, is
 blocked at a proxy nobody listens on, and a render that is still busy after 15 seconds is
 abandoned. A load of a URL under `MUNINN_PUBLIC_BASE_URL`, such as an artifact embedded by the

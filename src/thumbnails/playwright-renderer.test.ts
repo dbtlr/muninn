@@ -1,6 +1,9 @@
 import { createSocket } from 'node:dgram';
 import type { Socket } from 'node:dgram';
 import { once } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
@@ -132,6 +135,8 @@ describe.skipIf(chromiumPath === undefined)(
     let udpPackets = 0;
     let mcpPosts = 0;
     let siblingQueries: string[] = [];
+    let drawnTexts: string[] = [];
+    let scratch: string;
     let renderer: ThumbnailRenderer;
 
     beforeAll(async () => {
@@ -155,7 +160,34 @@ describe.skipIf(chromiumPath === undefined)(
       await once(udp, 'listening');
       const udpPort = udp.address().port;
 
+      // Stands in for Mermaid's bundle: each drawing is an SVG whose image
+      // names the diagram text it was given, so a test sees which texts were
+      // drawn and that the drawing reached the screenshot page.
+      scratch = await mkdtemp(join(tmpdir(), 'muninn-renderer-test-'));
+      const mermaidScriptPath = join(scratch, 'mermaid.js');
+      await writeFile(
+        mermaidScriptPath,
+        'globalThis.mermaid={initialize(){},render:async(id,text)=>({svg:' +
+          `'<svg id="'+id+'" xmlns="http://www.w3.org/2000/svg"><image href="/a/drawn?text='+encodeURIComponent(text)+'"/></svg>'})};`,
+        'utf8',
+      );
+
       const app = new Hono();
+      // What the app serves for a Markdown artifact with two mermaid fences;
+      // the second fence's text is markup, which must arrive as text.
+      app.get('/a/diagrams', (c) =>
+        c.html(
+          '<!doctype html><body><pre class="mermaid">graph TD; A--&gt;B</pre>' +
+            '<pre class="mermaid">&lt;/pre&gt;&lt;img src=&quot;/a/drawn?text=injected&quot;&gt;</pre></body>',
+        ),
+      );
+      app.get('/a/html-diagram', (c) =>
+        c.html('<!doctype html><body><pre class="mermaid">html-diagram</pre></body>'),
+      );
+      app.get('/a/drawn', (c) => {
+        drawnTexts.push(c.req.query('text') ?? '');
+        return c.body(PNG.buffer, 200, { 'Content-Type': 'image/png' });
+      });
       app.get('/a/page', (c) =>
         c.html('<!doctype html><body style="background:#123456;margin:0"><h1>hello</h1></body>'),
       );
@@ -214,6 +246,7 @@ describe.skipIf(chromiumPath === undefined)(
       ({ server, url: baseUrl } = await listen(app));
       renderer = createPlaywrightRenderer({
         executablePath: chromiumPath,
+        mermaidScriptPath,
         publicBaseUrl: PUBLIC_BASE_URL,
       });
       // Pay for the cold Chromium launch here, with a generous hook budget,
@@ -225,6 +258,7 @@ describe.skipIf(chromiumPath === undefined)(
 
     afterAll(async () => {
       await renderer.close();
+      await rm(scratch, { force: true, recursive: true });
       await promisify(server.close.bind(server))();
       await promisify(neighbour.close.bind(neighbour))();
       udp.close();
@@ -309,6 +343,60 @@ describe.skipIf(chromiumPath === undefined)(
 
       expect(bytes).not.toBeNull();
       expect(siblingQueries.toSorted()).toEqual(['?expires=1&signature=page', '?from=frame']);
+    });
+
+    it("draws a Markdown artifact's mermaid fences into its preview", async () => {
+      drawnTexts = [];
+
+      const bytes = await renderer.render({
+        id: 'diagrams',
+        mediaType: 'text/markdown',
+        url: `${baseUrl}/a/diagrams`,
+      });
+
+      expect(bytes).not.toBeNull();
+      expect([...bytes!.subarray(0, 3)]).toEqual(JPEG_MAGIC);
+      // The drawings' images load from the preview page once swapped in.
+      await expect
+        .poll(() => drawnTexts.toSorted())
+        .toEqual(['</pre><img src="/a/drawn?text=injected">', 'graph TD; A-->B']);
+    });
+
+    it('leaves mermaid markup in an HTML artifact undrawn', async () => {
+      drawnTexts = [];
+
+      const bytes = await renderer.render({
+        id: 'html-diagram',
+        mediaType: 'text/html',
+        url: `${baseUrl}/a/html-diagram`,
+      });
+
+      expect(bytes).not.toBeNull();
+      await delay(300);
+      expect(drawnTexts).toEqual([]);
+    });
+
+    it("keeps a Markdown preview, undrawn, when Mermaid's bundle is missing", async () => {
+      const reported: string[] = [];
+      const bundleless = createPlaywrightRenderer({
+        executablePath: chromiumPath,
+        mermaidScriptPath: join(scratch, 'missing.js'),
+        report: (message) => {
+          reported.push(message);
+        },
+      });
+      try {
+        const bytes = await bundleless.render({
+          id: 'diagrams',
+          mediaType: 'text/markdown',
+          url: `${baseUrl}/a/diagrams`,
+        });
+
+        expect(bytes).not.toBeNull();
+        expect(reported).toEqual([expect.stringMatching(/^Mermaid thumbnails disabled, /u)]);
+      } finally {
+        await bundleless.close();
+      }
     });
 
     it('abandons a page that never settles once the deadline passes', async () => {

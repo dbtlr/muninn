@@ -13,3 +13,5 @@ build/
 
 .wrangler/
 .dev.vars*
+
+.scratch/
