@@ -81,6 +81,27 @@ embeds the new URL. The earlier document keeps showing the earlier image.
 
 `add_artifact` returns the artifact's `id` and resolved `url`. Hand the `url` to the user directly rather than the id alone.
 
+## Publishing a Large Page
+
+For an HTML page over about 20 KB, upload it from a script instead of passing it as `content` in the tool call: every byte of a tool call's arguments stays in the conversation context. Write the page to a file, then send one `tools/call` request to the server's `/mcp` URL. The endpoint is stateless and answers with plain JSON, so there is no `initialize` step, session header, or event stream:
+
+```bash
+jq -n --rawfile content page.html \
+  '{jsonrpc: "2.0", id: 1, method: "tools/call", params: {name: "add_artifact", arguments: {
+     title: "Q3 Migration Plan", description: "Phases, owners, and open questions",
+     project: "my-project", mediaType: "text/html", content: $content}}}' |
+curl -fsS "$MUNINN_MCP_URL" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  ${MUNINN_API_KEY:+-H "Authorization: Bearer $MUNINN_API_KEY"} \
+  --data-binary @- |
+jq -r 'if .error then error(.error.message)
+       elif .result.isError then error(.result.content[0].text)
+       else .result.content[0].text | fromjson | .url end'
+```
+
+Set `MUNINN_MCP_URL` to the `/mcp` URL your MCP client uses. When the server requires a login, set `MUNINN_API_KEY` to the API key your client sends; without it the request fails with 401. Add `collection` to the arguments as Step 2 describes. The command prints the artifact's URL, or fails with the server's error message.
+
 ## Sending a Secret to the Owner
 
 Use this when the owner needs a token, password, or key file that you hold or can produce. The secret must never enter your transcript: do not pass it to any tool, and never print, echo, or log it.
