@@ -6,9 +6,11 @@ import { chromium } from 'playwright-core';
 import { mediaDefinition } from '../artifacts/media.js';
 import {
   BASE_CHROMIUM_ARGS,
-  closeQuietly,
+  closeWhenCreated,
   DEAD_PROXY,
+  ignoreFailure,
   SIGNALS_LEFT_TO_SERVER,
+  untilAborted,
 } from './chromium-launch.js';
 import type { MermaidRenderer } from './mermaid-renderer.js';
 import { createMermaidRenderer } from './mermaid-renderer.js';
@@ -316,7 +318,20 @@ export function createPlaywrightRenderer({
     if (launched === null) {
       return null;
     }
-    const context = await launched.newContext({
+    // One deadline for the whole render, context creation included, raced
+    // against the work rather than enforced by closing the context: Playwright
+    // never settles a newPage() that a closing context interrupts, and a
+    // Chromium that hangs without disconnecting never settles newContext().
+    // Either would hold the queue for good. On the deadline the render rejects
+    // at once and closes the context in the background, whenever it exists;
+    // the abort also ends the Mermaid step (see mermaid-renderer.ts).
+    const deadlineReached = new AbortController();
+    const deadline = setTimeout(() => {
+      deadlineReached.abort(
+        new Error(`Thumbnail render passed its ${String(timeoutMs)} ms deadline`),
+      );
+    }, timeoutMs);
+    const creating = launched.newContext({
       acceptDownloads: false,
       colorScheme: 'dark',
       deviceScaleFactor: DEVICE_SCALE_FACTOR,
@@ -326,22 +341,22 @@ export function createPlaywrightRenderer({
       javaScriptEnabled: false,
       viewport: VIEWPORT,
     });
-    // One deadline for the whole render: closing the context makes whatever
-    // step is in flight reject, so a page that keeps the network busy and
-    // then spins cannot hold the queue past timeoutMs. The abort also ends
-    // the Mermaid step: the renderer stops waiting for it at once and closes
-    // its context in the background (see mermaid-renderer.ts).
-    const deadlineReached = new AbortController();
-    const deadline = setTimeout(() => {
-      deadlineReached.abort();
-      void closeQuietly(context);
-    }, timeoutMs);
-    try {
+    let context: BrowserContext | undefined;
+    const capturing = (async () => {
+      context = await creating;
       await confineToOrigin(context, origin, publicBaseUrl);
-      return await capture(context, target, deadlineReached.signal);
+      return capture(context, target, deadlineReached.signal);
+    })();
+    try {
+      return await untilAborted(capturing, deadlineReached.signal);
     } finally {
       clearTimeout(deadline);
-      await context.close();
+      if (deadlineReached.signal.aborted) {
+        void ignoreFailure(capturing);
+        void closeWhenCreated(creating);
+      } else {
+        await context?.close();
+      }
     }
   }
 

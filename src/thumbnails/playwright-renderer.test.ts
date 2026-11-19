@@ -10,7 +10,8 @@ import { promisify } from 'node:util';
 import type { ServerType } from '@hono/node-server';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
+import { chromium } from 'playwright-core';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vite-plus/test';
 
 import {
   createPlaywrightRenderer,
@@ -480,7 +481,7 @@ describe.skipIf(chromiumPath === undefined)(
             mediaType: 'text/markdown',
             url: `${baseUrl}/a/diagrams`,
           }),
-        ).rejects.toThrow(/closed|aborted/u);
+        ).rejects.toThrow(/passed its 3000 ms deadline/u);
 
         expect(Date.now() - started).toBeLessThan(6000);
       } finally {
@@ -494,10 +495,84 @@ describe.skipIf(chromiumPath === undefined)(
 
       await expect(
         impatient.render({ id: 'slow', mediaType: 'text/html', url: `${baseUrl}/a/slow` }),
-      ).rejects.toThrow(/closed|Timeout/u);
+      ).rejects.toThrow(/passed its 1500 ms deadline/u);
 
       expect(Date.now() - started).toBeLessThan(4000);
       await impatient.close();
+    });
+
+    it('settles a render whose deadline fires while its page is opening', async () => {
+      const timeoutMs = 1000;
+      const launch = chromium.launch.bind(chromium);
+      const launches = vi.spyOn(chromium, 'launch');
+      // Playwright leaves newPage() pending for good when its context closes
+      // mid-call; start it just before the deadline so that is what happens.
+      launches.mockImplementation(async (...args) => {
+        const browser = await launch(...args);
+        const newContext = browser.newContext.bind(browser);
+        browser.newContext = async (...options) => {
+          const context = await newContext(...options);
+          const newPage = context.newPage.bind(context);
+          const opened = Date.now();
+          context.newPage = async () => {
+            await delay(Math.max(0, timeoutMs - 10 - (Date.now() - opened)));
+            return newPage();
+          };
+          return context;
+        };
+        return browser;
+      });
+      const impatient = createPlaywrightRenderer({ executablePath: chromiumPath, timeoutMs });
+      try {
+        const started = Date.now();
+
+        await expect(
+          impatient.render({ id: 'slow', mediaType: 'text/html', url: `${baseUrl}/a/slow` }),
+        ).rejects.toThrow(/passed its 1000 ms deadline/u);
+
+        expect(Date.now() - started).toBeLessThan(timeoutMs + 2000);
+        const browser = await launches.mock.results[0]?.value;
+        await expect.poll(() => browser?.contexts().length, { timeout: 5000 }).toBe(0);
+      } finally {
+        launches.mockRestore();
+        await impatient.close();
+      }
+    });
+
+    it('settles a render whose browser is slow to create its context, then closes the context', async () => {
+      const timeoutMs = 1000;
+      const launch = chromium.launch.bind(chromium);
+      const launches = vi.spyOn(chromium, 'launch');
+      // The context the slow browser finally creates, long after the deadline.
+      let created: Promise<unknown> | undefined;
+      launches.mockImplementation(async (...args) => {
+        const browser = await launch(...args);
+        const newContext = browser.newContext.bind(browser);
+        browser.newContext = async (...options) => {
+          await delay(timeoutMs * 3);
+          const creating = newContext(...options);
+          created = creating;
+          return creating;
+        };
+        return browser;
+      });
+      const impatient = createPlaywrightRenderer({ executablePath: chromiumPath, timeoutMs });
+      try {
+        const started = Date.now();
+
+        await expect(
+          impatient.render({ id: 'slow', mediaType: 'text/html', url: `${baseUrl}/a/slow` }),
+        ).rejects.toThrow(/passed its 1000 ms deadline/u);
+
+        expect(Date.now() - started).toBeLessThan(timeoutMs * 2);
+        const browser = await launches.mock.results[0]?.value;
+        await expect.poll(() => created, { timeout: timeoutMs * 6 }).toBeDefined();
+        await created;
+        await expect.poll(() => browser?.contexts().length, { timeout: 6000 }).toBe(0);
+      } finally {
+        launches.mockRestore();
+        await impatient.close();
+      }
     });
   },
 );

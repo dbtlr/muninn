@@ -12,8 +12,11 @@ import { chromium } from 'playwright-core';
 import {
   BASE_CHROMIUM_ARGS,
   closeQuietly,
+  closeWhenCreated,
   DEAD_PROXY,
+  ignoreFailure,
   SIGNALS_LEFT_TO_SERVER,
+  untilAborted,
 } from './chromium-launch.js';
 
 // Draws Mermaid diagrams for gallery previews (see
@@ -161,45 +164,6 @@ function defaultReport(message: string): void {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-// Awaits `promise` only to mark its rejection handled.
-async function ignoreFailure(promise: Promise<unknown>): Promise<void> {
-  try {
-    await promise;
-  } catch {
-    // Whoever awaits it next sees the failure.
-  }
-}
-
-// Closes a context whose creation a render stopped waiting for.
-async function closeWhenCreated(creating: Promise<BrowserContext>): Promise<void> {
-  try {
-    await closeQuietly(await creating);
-  } catch {
-    // Never created; nothing to close.
-  }
-}
-
-// Settles as `promise` does, or rejects as soon as `signal` aborts.
-export async function untilAborted<T>(
-  promise: Promise<T>,
-  signal: AbortSignal | undefined,
-): Promise<T> {
-  if (signal === undefined) {
-    return promise;
-  }
-  signal.throwIfAborted();
-  const { promise: aborted, reject } = Promise.withResolvers<never>();
-  const onAbort = (): void => {
-    reject(signal.reason);
-  };
-  signal.addEventListener('abort', onAbort, { once: true });
-  try {
-    return await Promise.race([promise, aborted]);
-  } finally {
-    signal.removeEventListener('abort', onAbort);
-  }
 }
 
 // One headless Chromium for Mermaid alone, launched on first use and
