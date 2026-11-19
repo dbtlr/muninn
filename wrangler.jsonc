@@ -11,8 +11,9 @@
   // Matches the `workers` test project in vite.config.ts.
   "compatibility_date": "2026-08-15",
   "compatibility_flags": ["nodejs_compat"],
-  // No database_id or bucket_name: wrangler provisions both on the first
-  // deploy and writes their IDs back here.
+  // No database_id or bucket_name. `wrangler d1 create --update-config`
+  // writes the database ID here. The first deploy creates the bucket and
+  // writes no name back; later deploys keep the deployed Worker's bucket.
   "d1_databases": [
     {
       "binding": "MUNINN_DB",
