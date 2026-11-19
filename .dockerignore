@@ -21,3 +21,4 @@ AGENTS.md
 .idea
 .DS_Store
 *.log
+.scratch

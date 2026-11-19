@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { serveStatic } from '@hono/node-server/serve-static';
 import type { Hono } from 'hono';
 
+import { THUMBNAIL_MERMAID_BUNDLE } from './thumbnails/mermaid-bundle.js';
+
 // Resolve the static asset root relative to this module, not process.cwd(),
 // so a different WORKDIR/cwd (e.g. Docker) can't silently 404 every asset.
 // Both the dev entry (src/static-files.ts) and the packed bundle
@@ -13,6 +15,10 @@ import type { Hono } from 'hono';
 // layout.
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const STATIC_ROOT = process.env.MUNINN_STATIC_ROOT ?? join(moduleDir, '..', 'dist', 'public');
+
+// The full path of Mermaid's single-file bundle, which the build copies into
+// the static asset root for the thumbnail renderer.
+export const THUMBNAIL_MERMAID_BUNDLE_PATH = join(STATIC_ROOT, THUMBNAIL_MERMAID_BUNDLE);
 
 // Node's static-file routes, passed to createApp by server.ts.
 export function installNodeStaticFiles(app: Hono): void {

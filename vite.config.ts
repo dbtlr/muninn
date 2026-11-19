@@ -1,8 +1,33 @@
+import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
 import { defineConfig, toolingPlugin } from '@dbtlr/tooling';
 import tailwindcss from '@tailwindcss/vite';
+import type { Plugin } from 'vite';
 
 import { MIGRATIONS_DIR } from './src/migrations-dir.js';
+import { THUMBNAIL_MERMAID_BUNDLE } from './src/thumbnails/mermaid-bundle.js';
+
+// Copies Mermaid's single-file bundle into the build for the thumbnail
+// renderer (src/thumbnails/mermaid-renderer.ts), which draws diagrams in a
+// browser with no network. The client entry above cannot serve there: it
+// loads each diagram type as a chunk over the network. Mermaid stays a dev
+// dependency; the runtime image gets this one file.
+function thumbnailMermaidBundle(): Plugin {
+  return {
+    apply: 'build',
+    async generateBundle() {
+      const source = createRequire(import.meta.url).resolve('mermaid/dist/mermaid.min.js');
+      this.emitFile({
+        fileName: THUMBNAIL_MERMAID_BUNDLE,
+        source: await readFile(source),
+        type: 'asset',
+      });
+    },
+    name: 'muninn:thumbnail-mermaid-bundle',
+  };
+}
 
 // Composition path: toolingPlugin batteries (node: true, pack) — `dev` runs the
 // server straight off src/ via tsx watch, but `build` needs a real production
@@ -73,6 +98,7 @@ export default defineConfig({
       pack: { dts: false, entry: ['src/server.ts'], exports: false, fixedExtension: false },
     }),
     tailwindcss(),
+    thumbnailMermaidBundle(),
   ],
   // Favicon files, copied verbatim into dist/public alongside the built
   // assets. Kept under src/ (not the default ./public) so the Docker builder

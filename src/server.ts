@@ -6,7 +6,7 @@ import { createApp } from './app.js';
 import { assertNoLegacyEnv } from './legacy-env.js';
 import { resolvePort } from './port.js';
 import { getDefaultAppServices } from './services.js';
-import { installNodeStaticFiles } from './static-files.js';
+import { installNodeStaticFiles, THUMBNAIL_MERMAID_BUNDLE_PATH } from './static-files.js';
 import { createPlaywrightRenderer, resolveChromiumPath } from './thumbnails/playwright-renderer.js';
 import { resolvePublicBaseUrl } from './urls.js';
 
@@ -22,6 +22,7 @@ const services = await getDefaultAppServices();
 const chromiumPath = await resolveChromiumPath(process.env);
 const renderer = createPlaywrightRenderer({
   executablePath: chromiumPath,
+  mermaidScriptPath: THUMBNAIL_MERMAID_BUNDLE_PATH,
   publicBaseUrl: resolvePublicBaseUrl(),
 });
 const app = createApp(services, undefined, installNodeStaticFiles);

@@ -4,6 +4,14 @@ import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 
 import { mediaDefinition } from '../artifacts/media.js';
+import {
+  BASE_CHROMIUM_ARGS,
+  closeQuietly,
+  DEAD_PROXY,
+  SIGNALS_LEFT_TO_SERVER,
+} from './chromium-launch.js';
+import type { MermaidRenderer } from './mermaid-renderer.js';
+import { createMermaidRenderer } from './mermaid-renderer.js';
 import type { ThumbnailRenderer, ThumbnailTarget } from './types.js';
 
 // Rendered at a desktop width, then captured at half scale: the gallery
@@ -46,6 +54,10 @@ export async function resolveChromiumPath(env: NodeJS.ProcessEnv): Promise<strin
 
 type RendererOptions = {
   executablePath?: string | undefined;
+  // Mermaid's single-file bundle, for drawing a Markdown artifact's mermaid
+  // fences into its preview (see mermaid-renderer.ts). Without it, or when
+  // the file is missing, a fence shows as its source.
+  mermaidScriptPath?: string | undefined;
   // This instance's public base URL (MUNINN_PUBLIC_BASE_URL). Artifacts
   // embed each other by the full URL add_artifact returns; a render loads
   // those from its own origin instead (see confineToOrigin).
@@ -76,8 +88,9 @@ function imagePage(url: string): string {
 // script-driven network path (fetch, WebSocket, WebTransport, WebRTC,
 // workers, popups) turned out to need its own fence with its own gaps. So
 // the render context has JavaScript off (see `render`), which removes that
-// whole class: a mermaid fence shows as its source in the thumbnail, and
-// that is the trade.
+// whole class. A Markdown artifact's mermaid fences are drawn in a separate
+// browser that runs only Mermaid, with no network at all (see
+// mermaid-renderer.ts), and swapped into the page before the screenshot.
 //
 // What remains is declarative loads (img, iframe, stylesheet, meta refresh),
 // fenced twice. The browser is launched (see `launch`) with a proxy nobody
@@ -128,10 +141,6 @@ export function localUrlFor(
   return href.startsWith(`${base}/`) ? `${origin}${href.slice(base.length)}` : undefined;
 }
 
-// TCP port 9 (discard) on loopback: nothing listens there, so proxied
-// connections are refused at once rather than hanging.
-const DEAD_PROXY = 'http://127.0.0.1:9';
-
 export function proxyFencedTo(origin: string): { bypass: string; server: string } {
   // `<-loopback>` removes Chromium's implicit "never proxy loopback" rule,
   // so 127.0.0.1 on any other port goes to the dead proxy like everything
@@ -160,12 +169,46 @@ function watchArtifactResponse(page: Page, url: string): () => boolean {
   return () => loaded;
 }
 
-async function closeQuietly(context: BrowserContext): Promise<void> {
-  try {
-    await context.close();
-  } catch {
-    // Already closed by the render's own finally; nothing to do.
+// Replaces each of a Markdown page's mermaid fences with its drawing. The
+// page has scripts off: Playwright reads and writes its DOM from its own
+// isolated world, and markup set that way never runs a script. markdown.ts
+// emits `<pre class="mermaid">` only for a ```mermaid fence and escapes any
+// raw HTML in the source, so every match is a fence and its text content is
+// the diagram source. A fence Mermaid cannot draw keeps its source, and so
+// does every fence when the drawing fails (reported): the preview is still
+// worth keeping. Only the render's deadline fails the render.
+async function drawMermaidFences(
+  page: Page,
+  {
+    mermaid,
+    report,
+    signal,
+  }: { mermaid: MermaidRenderer; report: (message: string) => void; signal: AbortSignal },
+): Promise<void> {
+  const fences = page.locator('pre.mermaid');
+  const texts = await fences.allTextContents();
+  if (texts.length === 0) {
+    return;
   }
+  let drawings: (string | null)[];
+  try {
+    drawings = await mermaid.render(texts, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    report(`Mermaid diagrams left as source in a thumbnail: ${message}`);
+    return;
+  }
+  await fences.evaluateAll((elements, svgs) => {
+    elements.forEach((element, index) => {
+      const svg = svgs[index];
+      if (typeof svg === 'string') {
+        element.outerHTML = svg;
+      }
+    });
+  }, drawings);
 }
 
 // One shared headless Chromium, launched on first use and relaunched after a
@@ -175,6 +218,7 @@ async function closeQuietly(context: BrowserContext): Promise<void> {
 // declines with null and the gallery keeps its drawn placeholders.
 export function createPlaywrightRenderer({
   executablePath,
+  mermaidScriptPath,
   publicBaseUrl,
   report = defaultReport,
   timeoutMs = 15_000,
@@ -185,17 +229,16 @@ export function createPlaywrightRenderer({
   // first origin it renders; every artifact URL comes from the same
   // server, so a second origin is a caller bug, not a case to support.
   let pinnedOrigin: string | undefined;
+  const mermaid =
+    mermaidScriptPath === undefined
+      ? undefined
+      : createMermaidRenderer({ executablePath, report, scriptPath: mermaidScriptPath });
 
   async function launch(origin: string): Promise<Browser> {
     try {
       const launched = await chromium.launch({
         args: [
-          // The runtime container runs as an unprivileged user without the
-          // kernel features Chromium's own sandbox wants; content is
-          // self-authored on a trusted network, so the sandbox is not the
-          // boundary here anyway.
-          '--no-sandbox',
-          '--disable-dev-shm-usage',
+          ...BASE_CHROMIUM_ARGS,
           // Scripting off in every renderer process from the moment it
           // starts. The per-context `javaScriptEnabled: false` is applied
           // over CDP after a frame exists, which a sandboxed srcdoc frame in
@@ -209,12 +252,7 @@ export function createPlaywrightRenderer({
         ],
         proxy: proxyFencedTo(origin),
         ...(executablePath === undefined ? {} : { executablePath }),
-        // Playwright's own signal handlers close the browser but swallow the
-        // signal, which would leave the HTTP server running through a
-        // `docker stop`. server.ts owns shutdown and calls close().
-        handleSIGHUP: false,
-        handleSIGINT: false,
-        handleSIGTERM: false,
+        ...SIGNALS_LEFT_TO_SERVER,
       });
       launched.on('disconnected', () => {
         browser = undefined;
@@ -246,6 +284,7 @@ export function createPlaywrightRenderer({
   async function capture(
     context: BrowserContext,
     target: ThumbnailTarget,
+    signal: AbortSignal,
   ): Promise<Uint8Array | null> {
     const page = await context.newPage();
     page.setDefaultTimeout(timeoutMs);
@@ -257,6 +296,11 @@ export function createPlaywrightRenderer({
     }
     if (!artifactLoaded()) {
       return null;
+    }
+    // Only a Markdown page: an HTML artifact is the author's own markup, so
+    // a `pre.mermaid` there is not a fence this app rendered.
+    if (mermaid !== undefined && mediaDefinition(target.mediaType).renderingMode === 'markdown') {
+      await drawMermaidFences(page, { mermaid, report, signal });
     }
     const shot = await page.screenshot({ quality: JPEG_QUALITY, type: 'jpeg' });
     return new Uint8Array(shot);
@@ -284,13 +328,17 @@ export function createPlaywrightRenderer({
     });
     // One deadline for the whole render: closing the context makes whatever
     // step is in flight reject, so a page that keeps the network busy and
-    // then spins cannot hold the queue past timeoutMs.
+    // then spins cannot hold the queue past timeoutMs. The abort also ends
+    // the Mermaid step: the renderer stops waiting for it at once and closes
+    // its context in the background (see mermaid-renderer.ts).
+    const deadlineReached = new AbortController();
     const deadline = setTimeout(() => {
+      deadlineReached.abort();
       void closeQuietly(context);
     }, timeoutMs);
     try {
       await confineToOrigin(context, origin, publicBaseUrl);
-      return await capture(context, target);
+      return await capture(context, target, deadlineReached.signal);
     } finally {
       clearTimeout(deadline);
       await context.close();
@@ -299,9 +347,10 @@ export function createPlaywrightRenderer({
 
   return {
     close: async () => {
-      if (browser !== undefined) {
-        await (await browser).close();
-      }
+      await Promise.all([
+        mermaid?.close(),
+        browser === undefined ? undefined : browser.then(async (launched) => launched.close()),
+      ]);
     },
     render,
   };
