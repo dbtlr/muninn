@@ -247,7 +247,7 @@ Direct development uses `.env.development` and an intentionally separate port an
 | `MUNINN_FILES_DIR` | `data/development/files` |
 | `MUNINN_DATABASE_PATH` | `data/development/database/artifacts.db` |
 | `MUNINN_THUMBS_DIR` | `data/development/thumbs` |
-| `MUNINN_CHROMIUM_PATH` | probed: Alpine `chromium`, Linux `google-chrome`, macOS Chrome |
+| `MUNINN_CHROMIUM_PATH` | probed: Linux `chromium-headless-shell`, `chromium`, or `google-chrome`; macOS Chrome |
 | `MUNINN_OWNER_PASSWORD` | unset: no login |
 | `MUNINN_CLIENT_ADDRESS_HEADER` | unset: the connection's address |
 
@@ -418,9 +418,10 @@ one from an older renderer version, is rendered again on the next view. Code hig
 rendered in the browser. Allowlisted images and PDFs
 are served directly from `/a/:id`; SVG responses receive an additional restrictive content security
 policy, and HTML artifacts are served in a script-enabled CSP sandbox with an opaque origin. Gallery
-previews are screenshots taken by Alpine's Chromium package, driven by playwright-core from a serial
-in-process queue. The Docker image is a two-stage Alpine build that
-runs as the non-root `node` user; the application writes only to its two persistence mounts and
+previews are screenshots taken by Debian's headless-only Chromium (`chromium-headless-shell`), driven
+by playwright-core from a serial in-process queue. The Docker image is a two-stage Debian slim build
+that leaves out Mesa's GPU drivers, which headless rendering never loads, and runs as the non-root
+`node` user; the application writes only to its two persistence mounts and
 the derived thumbnails directory, and Chromium keeps its own scratch profile under the container's
 temporary directory.
 
