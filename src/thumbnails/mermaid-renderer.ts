@@ -63,6 +63,12 @@ export function mermaidLaunchOptions(executablePath: string | undefined): Launch
       // restricts it to proxied connections, which all fail. (Chromium
       // ignores the content-shell spelling, --force-webrtc-ip-handling-policy.)
       '--webrtc-ip-handling-policy=disable_non_proxied_udp',
+      // No name resolves. WebRTC resolves a TURN-over-TCP server's hostname
+      // through the host's resolver even with every connection proxied,
+      // which would let a script beacon or exfiltrate through DNS queries.
+      // The proxy is an IP literal and the page is answered from memory, so
+      // nothing here needs a name.
+      '--host-resolver-rules=MAP * ~NOTFOUND',
       // This browser runs script fed by artifact text without Chromium's own
       // sandbox (see BASE_CHROMIUM_ARGS); the interpreter alone leaves a
       // smaller surface for an engine exploit than the JIT compilers, and
@@ -94,6 +100,24 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Settles as `promise` does, or rejects as soon as `signal` aborts.
+async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) {
+    return promise;
+  }
+  signal.throwIfAborted();
+  const { promise: aborted, reject } = Promise.withResolvers<never>();
+  const onAbort = (): void => {
+    reject(signal.reason);
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 // One headless Chromium for Mermaid alone, launched on first use and
 // relaunched after a crash. It never shares a process with an artifact page:
 // the artifact browser disables scripts for its whole life, and this one
@@ -115,22 +139,43 @@ export function createMermaidRenderer({
     return launched;
   }
 
-  // The bundle and the browser, or null once either is known to be missing.
-  async function ready(): Promise<{ browser: Browser; script: string } | null> {
+  function disable(reason: string): void {
+    if (!disabled) {
+      disabled = true;
+      report(`Mermaid thumbnails disabled, ${reason}`);
+    }
+  }
+
+  // The bundle and the browser, or null once either is known to be missing
+  // or unusable. A launch still in progress when the signal aborts goes on
+  // in the background, and the next render uses it.
+  async function ready(
+    signal: AbortSignal | undefined,
+  ): Promise<{ browser: Browser; script: string } | null> {
     if (disabled) {
       return null;
     }
+    let script: string;
     try {
       bundle ??= readFile(scriptPath, 'utf8');
-      const script = await bundle;
-      browser ??= launch();
-      return { browser: await browser, script };
+      script = await bundle;
     } catch (error) {
-      browser = undefined;
-      if (!disabled) {
-        disabled = true;
-        report(`Mermaid thumbnails disabled, ${describe(error)}`);
+      disable(describe(error));
+      return null;
+    }
+    if (script.trim() === '') {
+      disable(`the bundle ${scriptPath} is empty`);
+      return null;
+    }
+    const launching = (browser ??= launch());
+    try {
+      return { browser: await untilAborted(launching, signal), script };
+    } catch (error) {
+      if (signal?.aborted === true) {
+        throw error;
       }
+      browser = undefined;
+      disable(describe(error));
       return null;
     }
   }
@@ -140,7 +185,7 @@ export function createMermaidRenderer({
     script: string,
     texts: readonly string[],
     signal: AbortSignal | undefined,
-  ): Promise<(string | null)[]> {
+  ): Promise<(string | null)[] | null> {
     const context = await launched.newContext(MERMAID_CONTEXT_OPTIONS);
     // Closing the context makes whatever step is in flight reject. A signal
     // that aborted before the listener was added never calls it, so that
@@ -164,7 +209,10 @@ export function createMermaidRenderer({
       return await page.evaluate(
         async ({ prefix, diagrams }) => {
           // Set by the bundle above; the page holds nothing else.
-          const mermaid: Mermaid = Reflect.get(globalThis, 'mermaid');
+          const mermaid: Mermaid | undefined = Reflect.get(globalThis, 'mermaid');
+          if (typeof mermaid?.render !== 'function') {
+            return null;
+          }
           mermaid.initialize({ securityLevel: 'strict', startOnLoad: false, theme: 'dark' });
           return Promise.all(
             diagrams.map(async (text, index) => {
@@ -193,11 +241,16 @@ export function createMermaidRenderer({
       await launched?.close();
     },
     render: async (texts, signal) => {
-      const resources = await ready();
+      const resources = await ready(signal);
       if (resources === null) {
         return texts.map(() => null);
       }
-      return draw(resources.browser, resources.script, texts, signal);
+      const drawings = await draw(resources.browser, resources.script, texts, signal);
+      if (drawings === null) {
+        disable(`the bundle ${scriptPath} does not define mermaid`);
+        return texts.map(() => null);
+      }
+      return drawings;
     },
   };
 }

@@ -400,13 +400,17 @@ describe.skipIf(chromiumPath === undefined)(
     });
 
     it('keeps a Markdown preview, undrawn, when the drawing fails', async () => {
-      // A bundle that never defines mermaid, so the drawing itself throws.
-      const broken = join(scratch, 'broken.js');
-      await writeFile(broken, '// not mermaid', 'utf8');
+      // A bundle whose mermaid throws outside any one diagram.
+      const throwing = join(scratch, 'throwing.js');
+      await writeFile(
+        throwing,
+        "globalThis.mermaid={initialize(){throw new Error('boom')},render:async()=>({svg:'<svg></svg>'})};",
+        'utf8',
+      );
       const reported: string[] = [];
       const failing = createPlaywrightRenderer({
         executablePath: chromiumPath,
-        mermaidScriptPath: broken,
+        mermaidScriptPath: throwing,
         report: (message) => {
           reported.push(message);
         },
@@ -420,10 +424,38 @@ describe.skipIf(chromiumPath === undefined)(
 
         expect(bytes).not.toBeNull();
         expect(reported).toEqual([
-          expect.stringMatching(/^Mermaid diagrams left as source in a thumbnail: /u),
+          expect.stringMatching(/^Mermaid diagrams left as source in a thumbnail: .*boom/u),
         ]);
       } finally {
         await failing.close();
+      }
+    });
+
+    it('disables Mermaid once for a bundle that does not define it', async () => {
+      const notMermaid = join(scratch, 'not-mermaid.js');
+      await writeFile(notMermaid, '// not mermaid', 'utf8');
+      const reported: string[] = [];
+      const disabled = createPlaywrightRenderer({
+        executablePath: chromiumPath,
+        mermaidScriptPath: notMermaid,
+        report: (message) => {
+          reported.push(message);
+        },
+      });
+      try {
+        const target = {
+          id: 'diagrams',
+          mediaType: 'text/markdown' as const,
+          url: `${baseUrl}/a/diagrams`,
+        };
+
+        await expect(disabled.render(target)).resolves.not.toBeNull();
+        await expect(disabled.render(target)).resolves.not.toBeNull();
+        expect(reported).toEqual([
+          expect.stringMatching(/^Mermaid thumbnails disabled, .*does not define mermaid/u),
+        ]);
+      } finally {
+        await disabled.close();
       }
     });
 

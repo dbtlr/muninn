@@ -44,6 +44,10 @@ so it cannot run without network access.
     WebSocket connection fails, including one to this server.
   - `--webrtc-ip-handling-policy=disable_non_proxied_udp` restricts WebRTC to the proxy, so WebRTC
     has no UDP path. Chromium ignores the content-shell spelling `--force-webrtc-ip-handling-policy`.
+  - `--host-resolver-rules=MAP * ~NOTFOUND` makes every hostname fail to resolve. Without it,
+    WebRTC looks up the hostname of a TURN-over-TCP server through the host's resolver, which would
+    give a script an outbound DNS channel. Nothing in this browser needs a name: the proxy is an IP
+    literal, and the page is answered from memory.
   - Launch switches apply to every frame and process, including a sandboxed frame or popup in a
     process of its own.
   - Each render's diagrams are drawn in one fresh context. The context is offline and blocks
@@ -53,17 +57,19 @@ so it cannot run without network access.
 
   Unit tests pin the settings of both layers. The renderer tests load hostile bundles that try
   fetch, WebSocket, workers, an iframe, a sandboxed frame, a popup, and WebRTC. Each probe confirms
-  that it ran, and the tests assert that nothing arrives. When this decision was recorded, those
+  that it ran, and the tests assert that nothing arrives. A Chromium NetLog test asserts that a TURN
+  server hostname causes no DNS transaction. When this decision was recorded, those
   tests also passed with either layer removed.
 - **The drawings go back to the script-off page.** The renderer replaces each fence with its SVG
   through the isolated world, then takes the screenshot. A script in that markup does not run,
   because the page has scripts off. Any load the SVG declares goes through the artifact browser's
   existing fences. A diagram that Mermaid cannot parse keeps its source.
 - **One deadline.** The render's deadline also closes a Mermaid drawing that is still running, and
-  a deadline that passes fails the render. The second browser's first launch falls inside that
-  deadline.
-- **Degrades to source.** If the bundle file is missing, or the second Chromium fails to launch,
-  the renderer reports this once and stops trying. If one drawing fails for another reason, such
+  stops waiting for the second browser's first launch. A deadline that passes fails the render. A
+  launch cut off this way goes on in the background, and the next render uses it.
+- **Degrades to source.** If the bundle file is missing or empty, the bundle does not define
+  `mermaid`, or the second Chromium fails to launch, the renderer reports this once and stops
+  trying. If one drawing fails for another reason, such
   as a crash, the renderer reports it for that preview. Either way the fences show as source, and
   every other part of the preview renders as before.
 

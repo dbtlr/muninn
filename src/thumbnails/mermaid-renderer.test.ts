@@ -1,7 +1,7 @@
 import { createSocket } from 'node:dgram';
 import type { Socket } from 'node:dgram';
 import { once } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,11 +39,12 @@ async function listen(app: Hono): Promise<{ server: ServerType; url: string }> {
 // Pins both network layers, so a change that drops one fails here even
 // though the hostile-bundle tests below would still pass on the other.
 describe('mermaidLaunchOptions', () => {
-  it('sends every address to the dead proxy and keeps WebRTC off UDP', () => {
+  it('sends every address to the dead proxy, keeps WebRTC off UDP, and resolves no name', () => {
     const options = mermaidLaunchOptions('/usr/bin/chromium');
 
     expect(options.proxy).toEqual({ bypass: '<-loopback>', server: 'http://127.0.0.1:9' });
     expect(options.args).toContain('--webrtc-ip-handling-policy=disable_non_proxied_udp');
+    expect(options.args).toContain('--host-resolver-rules=MAP * ~NOTFOUND');
     expect(options.args).toContain('--js-flags=--jitless');
     expect(options.executablePath).toBe('/usr/bin/chromium');
   });
@@ -54,6 +55,25 @@ describe('MERMAID_CONTEXT_OPTIONS', () => {
     expect(MERMAID_CONTEXT_OPTIONS).toMatchObject({ offline: true, serviceWorkers: 'block' });
   });
 });
+
+// The DNS transactions a Chromium NetLog recorded, by hostname. Chromium
+// finishes the JSON on a clean exit; a log cut short is closed here.
+async function dnsLookups(netLogPath: string): Promise<string[]> {
+  const raw = await readFile(netLogPath, 'utf8');
+  let log: {
+    constants: { logEventTypes: Record<string, number> };
+    events: { params?: { hostname?: string }; type: number }[];
+  };
+  try {
+    log = JSON.parse(raw);
+  } catch {
+    log = JSON.parse(`${raw.trimEnd().replace(/,$/u, '')}]}`);
+  }
+  const dnsTransaction = log.constants.logEventTypes.DNS_TRANSACTION;
+  return log.events
+    .filter((event) => event.type === dnsTransaction)
+    .map((event) => event.params?.hostname ?? '');
+}
 
 describe('createMermaidRenderer without a bundle', () => {
   it('reports the unreadable bundle once and draws nothing', async () => {
@@ -72,6 +92,30 @@ describe('createMermaidRenderer without a bundle', () => {
     expect(reported).toHaveLength(1);
     expect(reported[0]).toMatch(/^Mermaid thumbnails disabled, /u);
     await mermaid.close();
+  });
+
+  it('treats an empty bundle as missing', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'muninn-mermaid-bundle-'));
+    try {
+      const empty = join(dir, 'mermaid.min.js');
+      await writeFile(empty, '', 'utf8');
+      const reported: string[] = [];
+      const mermaid = createMermaidRenderer({
+        executablePath: chromiumPath,
+        report: (message) => {
+          reported.push(message);
+        },
+        scriptPath: empty,
+      });
+
+      await expect(mermaid.render(['graph TD; A-->B'])).resolves.toEqual([null]);
+      expect(reported).toEqual([
+        expect.stringMatching(/^Mermaid thumbnails disabled, the bundle .* is empty$/u),
+      ]);
+      await mermaid.close();
+    } finally {
+      await rm(dir, { force: true, recursive: true });
+    }
   });
 });
 
@@ -138,6 +182,32 @@ describe.skipIf(chromiumPath === undefined)(
         await mermaid.close();
       }
     });
+
+    it(
+      'stops waiting for a slow launch once its signal aborts',
+      async () => {
+        // A Chromium that takes 10s to start.
+        const slow = join(scratch, 'slow-chromium.sh');
+        await writeFile(
+          slow,
+          `#!/bin/sh\nsleep 10\nexec ${JSON.stringify(chromiumPath)} "$@"\n`,
+          'utf8',
+        );
+        await chmod(slow, 0o755);
+        const mermaid = createMermaidRenderer({ executablePath: slow, scriptPath: mermaidBundle });
+        try {
+          const started = Date.now();
+
+          await expect(
+            mermaid.render(['graph TD; A-->B'], AbortSignal.timeout(1000)),
+          ).rejects.toThrow(/timed out|aborted/u);
+          expect(Date.now() - started).toBeLessThan(3000);
+        } finally {
+          await mermaid.close();
+        }
+      },
+      WARM_UP_TIMEOUT_MS,
+    );
 
     describe('with a bundle that tries to reach the network', () => {
       let neighbour: ServerType;
@@ -236,6 +306,35 @@ describe.skipIf(chromiumPath === undefined)(
         } finally {
           await mermaid.close();
         }
+      });
+
+      it('resolves no hostname, even for a WebRTC TURN server over TCP', async () => {
+        // A wrapper that starts the real Chromium with a NetLog, which
+        // records every DNS transaction the network stack makes.
+        const netLog = join(scratch, 'netlog.json');
+        const wrapper = join(scratch, 'chromium-with-netlog.sh');
+        await writeFile(
+          wrapper,
+          `#!/bin/sh\nexec ${JSON.stringify(chromiumPath)} --log-net-log=${JSON.stringify(netLog)} "$@"\n`,
+          'utf8',
+        );
+        await chmod(wrapper, 0o755);
+        const resolving = join(scratch, 'resolving.js');
+        await writeFile(
+          resolving,
+          `try{const pc=new RTCPeerConnection({iceServers:[{urls:'turn:muninn-dns-probe.example.org:3478?transport=tcp',username:'u',credential:'c'}]});` +
+            `pc.createDataChannel('x');pc.createOffer().then(o=>pc.setLocalDescription(o))}catch{}` +
+            `globalThis.mermaid={initialize(){},render:()=>new Promise((resolve)=>{setTimeout(()=>resolve({svg:'<svg></svg>'}),1500)})};`,
+          'utf8',
+        );
+        const mermaid = createMermaidRenderer({ executablePath: wrapper, scriptPath: resolving });
+        try {
+          await mermaid.render(['graph TD; A-->B']);
+        } finally {
+          await mermaid.close();
+        }
+
+        await expect(dnsLookups(netLog)).resolves.toEqual([]);
       });
 
       it('refuses requests from frames and popups in other processes', async () => {
