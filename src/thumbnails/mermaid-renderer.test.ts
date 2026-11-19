@@ -17,6 +17,7 @@ import {
   createMermaidRenderer,
   MERMAID_CONTEXT_OPTIONS,
   mermaidLaunchOptions,
+  untilAborted,
 } from './mermaid-renderer.js';
 import { resolveChromiumPath } from './playwright-renderer.js';
 
@@ -81,6 +82,28 @@ async function resolverEventsFor(netLogPath: string, hostname: string): Promise<
     .map(({ name }) => name);
 }
 
+describe('untilAborted', () => {
+  it('settles as the promise does while the signal stays quiet', async () => {
+    await expect(
+      untilAborted(Promise.resolve('drawn'), new AbortController().signal),
+    ).resolves.toBe('drawn');
+    await expect(untilAborted(Promise.reject(new Error('crashed')), undefined)).rejects.toThrow(
+      'crashed',
+    );
+  });
+
+  it('rejects as soon as the signal aborts, without waiting for the promise', async () => {
+    const never = Promise.withResolvers<string>().promise;
+    const controller = new AbortController();
+    setTimeout(() => {
+      controller.abort();
+    }, 50);
+
+    await expect(untilAborted(never, controller.signal)).rejects.toThrow(/aborted/u);
+    await expect(untilAborted(never, AbortSignal.abort())).rejects.toThrow(/aborted/u);
+  });
+});
+
 describe('createMermaidRenderer without a bundle', () => {
   it('reports the unreadable bundle once and draws nothing', async () => {
     const reported: string[] = [];
@@ -98,6 +121,37 @@ describe('createMermaidRenderer without a bundle', () => {
     expect(reported).toHaveLength(1);
     expect(reported[0]).toMatch(/^Mermaid thumbnails disabled, /u);
     await mermaid.close();
+  });
+
+  it('handles a launch that fails after its signal aborted', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    const reported: string[] = [];
+    const mermaid = createMermaidRenderer({
+      executablePath: '/nonexistent/chromium',
+      report: (message) => {
+        reported.push(message);
+      },
+      scriptPath: mermaidBundle,
+    });
+    try {
+      // The deadline passed while the bundle was read, so the render gives
+      // up before the launch it started has failed.
+      await expect(mermaid.render(['graph TD; A-->B'], AbortSignal.abort())).rejects.toThrow(
+        /aborted/u,
+      );
+      await delay(500);
+
+      expect(unhandled).toEqual([]);
+      await expect(mermaid.render(['graph TD; A-->B'])).resolves.toEqual([null]);
+      expect(reported).toEqual([expect.stringMatching(/^Mermaid thumbnails disabled, /u)]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      await mermaid.close();
+    }
   });
 
   it('treats an empty bundle as missing', async () => {

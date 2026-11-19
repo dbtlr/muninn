@@ -1,7 +1,12 @@
 import { readFile } from 'node:fs/promises';
 
 import type { Mermaid } from 'mermaid';
-import type { Browser, BrowserContextOptions, LaunchOptions } from 'playwright-core';
+import type {
+  Browser,
+  BrowserContext,
+  BrowserContextOptions,
+  LaunchOptions,
+} from 'playwright-core';
 import { chromium } from 'playwright-core';
 
 import {
@@ -104,8 +109,29 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Awaits `promise` only to mark its rejection handled.
+async function ignoreFailure(promise: Promise<unknown>): Promise<void> {
+  try {
+    await promise;
+  } catch {
+    // Whoever awaits it next sees the failure.
+  }
+}
+
+// Closes a context whose creation a render stopped waiting for.
+async function closeWhenCreated(creating: Promise<BrowserContext>): Promise<void> {
+  try {
+    await closeQuietly(await creating);
+  } catch {
+    // Never created; nothing to close.
+  }
+}
+
 // Settles as `promise` does, or rejects as soon as `signal` aborts.
-async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+export async function untilAborted<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
   if (signal === undefined) {
     return promise;
   }
@@ -172,6 +198,11 @@ export function createMermaidRenderer({
       return null;
     }
     const launching = (browser ??= launch());
+    // A render that gives up on this launch (its signal aborted) leaves the
+    // launch running for the next render; if it then fails with nobody
+    // awaiting it, that must not become an unhandled rejection, which stops
+    // the server. The next render awaits it and reports the failure.
+    void ignoreFailure(launching);
     try {
       return { browser: await untilAborted(launching, signal), script };
     } catch (error) {
@@ -190,7 +221,15 @@ export function createMermaidRenderer({
     texts: readonly string[],
     signal: AbortSignal | undefined,
   ): Promise<(string | null)[] | null> {
-    const context = await launched.newContext(MERMAID_CONTEXT_OPTIONS);
+    const creating = launched.newContext(MERMAID_CONTEXT_OPTIONS);
+    let context: BrowserContext;
+    try {
+      context = await untilAborted(creating, signal);
+    } catch (error) {
+      // Given up on (the signal aborted): close the context once it exists.
+      void closeWhenCreated(creating);
+      throw error;
+    }
     // Closing the context makes whatever step is in flight reject. A signal
     // that aborted before the listener was added never calls it, so that
     // case closes the context straight away.
