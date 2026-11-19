@@ -25,7 +25,9 @@
   ],
   "r2_buckets": [{ "binding": "MUNINN_BUCKET" }],
   // The Vite build output, served without auth. It holds only the stylesheet,
-  // the client scripts, and the icons. Matching files are served before the
+  // the client scripts, the icons, and Mermaid's single-file bundle for the
+  // Node thumbnail renderer (renderer/mermaid.min.js), which the Worker
+  // uploads but does not use. Matching files are served before the
   // Worker runs, even when it is misconfigured, at their paths under
   // dist/public, so each is also reachable at the site root (/app.css), not
   // only under /assets as on Node. That is harmless: everything here is

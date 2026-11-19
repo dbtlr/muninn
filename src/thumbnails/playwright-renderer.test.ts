@@ -399,6 +399,63 @@ describe.skipIf(chromiumPath === undefined)(
       }
     });
 
+    it('keeps a Markdown preview, undrawn, when the drawing fails', async () => {
+      // A bundle that never defines mermaid, so the drawing itself throws.
+      const broken = join(scratch, 'broken.js');
+      await writeFile(broken, '// not mermaid', 'utf8');
+      const reported: string[] = [];
+      const failing = createPlaywrightRenderer({
+        executablePath: chromiumPath,
+        mermaidScriptPath: broken,
+        report: (message) => {
+          reported.push(message);
+        },
+      });
+      try {
+        const bytes = await failing.render({
+          id: 'diagrams',
+          mediaType: 'text/markdown',
+          url: `${baseUrl}/a/diagrams`,
+        });
+
+        expect(bytes).not.toBeNull();
+        expect(reported).toEqual([
+          expect.stringMatching(/^Mermaid diagrams left as source in a thumbnail: /u),
+        ]);
+      } finally {
+        await failing.close();
+      }
+    });
+
+    it('abandons a Mermaid drawing that never settles once the deadline passes', async () => {
+      const stuck = join(scratch, 'stuck.js');
+      await writeFile(
+        stuck,
+        'globalThis.mermaid={initialize(){},render:()=>new Promise(()=>{})};',
+        'utf8',
+      );
+      const impatient = createPlaywrightRenderer({
+        executablePath: chromiumPath,
+        mermaidScriptPath: stuck,
+        timeoutMs: 3000,
+      });
+      try {
+        const started = Date.now();
+
+        await expect(
+          impatient.render({
+            id: 'diagrams',
+            mediaType: 'text/markdown',
+            url: `${baseUrl}/a/diagrams`,
+          }),
+        ).rejects.toThrow(/closed|aborted/u);
+
+        expect(Date.now() - started).toBeLessThan(6000);
+      } finally {
+        await impatient.close();
+      }
+    });
+
     it('abandons a page that never settles once the deadline passes', async () => {
       const impatient = createPlaywrightRenderer({ executablePath: chromiumPath, timeoutMs: 1500 });
       const started = Date.now();

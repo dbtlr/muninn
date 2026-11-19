@@ -1,5 +1,8 @@
-// Launch settings both thumbnail browsers share: the artifact renderer
-// (playwright-renderer.ts) and the Mermaid renderer (mermaid-renderer.ts).
+import type { BrowserContext } from 'playwright-core';
+
+// Launch settings and helpers both thumbnail browsers share: the artifact
+// renderer (playwright-renderer.ts) and the Mermaid renderer
+// (mermaid-renderer.ts).
 
 // TCP port 9 (discard) on loopback: nothing listens there, so proxied
 // connections are refused at once rather than hanging.
@@ -7,8 +10,10 @@ export const DEAD_PROXY = 'http://127.0.0.1:9';
 
 export const BASE_CHROMIUM_ARGS = [
   // The runtime container runs as an unprivileged user without the kernel
-  // features Chromium's own sandbox wants; content is self-authored on a
-  // trusted network, so the sandbox is not the boundary here anyway.
+  // features Chromium's own sandbox wants, so neither browser has it. The
+  // artifact browser runs no script at all; the Mermaid browser runs
+  // Mermaid's bundle on artifact-supplied diagram text, which is the residual
+  // risk ADR-0010 records.
   '--no-sandbox',
   '--disable-dev-shm-usage',
 ];
@@ -21,3 +26,13 @@ export const SIGNALS_LEFT_TO_SERVER = {
   handleSIGINT: false,
   handleSIGTERM: false,
 };
+
+// Closes a render's context, ignoring one that a deadline or crash already
+// closed.
+export async function closeQuietly(context: BrowserContext): Promise<void> {
+  try {
+    await context.close();
+  } catch {
+    // Already closed; nothing to do.
+  }
+}

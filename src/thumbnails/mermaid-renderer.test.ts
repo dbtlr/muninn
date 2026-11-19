@@ -13,7 +13,11 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 
-import { createMermaidRenderer } from './mermaid-renderer.js';
+import {
+  createMermaidRenderer,
+  MERMAID_CONTEXT_OPTIONS,
+  mermaidLaunchOptions,
+} from './mermaid-renderer.js';
 import { resolveChromiumPath } from './playwright-renderer.js';
 
 const chromiumPath = await resolveChromiumPath(process.env);
@@ -31,6 +35,25 @@ async function listen(app: Hono): Promise<{ server: ServerType; url: string }> {
   }
   return { server, url: `http://127.0.0.1:${String(address.port)}` };
 }
+
+// Pins both network layers, so a change that drops one fails here even
+// though the hostile-bundle tests below would still pass on the other.
+describe('mermaidLaunchOptions', () => {
+  it('sends every address to the dead proxy and keeps WebRTC off UDP', () => {
+    const options = mermaidLaunchOptions('/usr/bin/chromium');
+
+    expect(options.proxy).toEqual({ bypass: '<-loopback>', server: 'http://127.0.0.1:9' });
+    expect(options.args).toContain('--webrtc-ip-handling-policy=disable_non_proxied_udp');
+    expect(options.args).toContain('--js-flags=--jitless');
+    expect(options.executablePath).toBe('/usr/bin/chromium');
+  });
+});
+
+describe('MERMAID_CONTEXT_OPTIONS', () => {
+  it('takes each render context offline without service workers', () => {
+    expect(MERMAID_CONTEXT_OPTIONS).toMatchObject({ offline: true, serviceWorkers: 'block' });
+  });
+});
 
 describe('createMermaidRenderer without a bundle', () => {
   it('reports the unreadable bundle once and draws nothing', async () => {
@@ -108,7 +131,7 @@ describe.skipIf(chromiumPath === undefined)(
         const started = Date.now();
 
         await expect(mermaid.render(['graph TD; A-->B'], controller.signal)).rejects.toThrow(
-          /closed/u,
+          /closed|aborted/u,
         );
         expect(Date.now() - started).toBeLessThan(4000);
       } finally {
@@ -168,18 +191,25 @@ describe.skipIf(chromiumPath === undefined)(
 
         // The same attempts from a sandboxed frame and a popup, each in a
         // process of its own, where only launch-time settings are certain to
-        // apply before the first script runs.
+        // apply before the first script runs. Each reports back once its
+        // attempts have run, and the drawing lists who reported, so the test
+        // knows the attempts were made rather than never reached.
         const attempts =
-          `fetch('${neighbourUrl}/escaped');new WebSocket('${wsUrl}/ws-escaped');` +
-          `const pc=new RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.1:${udpPort}'}]});` +
-          `pc.createDataChannel('x');pc.createOffer().then(o=>pc.setLocalDescription(o));`;
+          `try{fetch('${neighbourUrl}/escaped')}catch{}` +
+          `try{new WebSocket('${wsUrl}/ws-escaped')}catch{}` +
+          `try{const pc=new RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.1:${udpPort}'}]});` +
+          `pc.createDataChannel('x');pc.createOffer().then(o=>pc.setLocalDescription(o))}catch{}` +
+          `(window.opener??parent).postMessage(window.opener?'popup':'frame','*');`;
         escaping = join(scratch, 'escaping.js');
         await writeFile(
           escaping,
           `const code=${JSON.stringify(`<script>${attempts}</script>`)};` +
+            `const ran=new Set();addEventListener('message',(e)=>ran.add(e.data));` +
             `try{window.open(URL.createObjectURL(new Blob([code],{type:'text/html'})))}catch{}` +
             `try{const f=document.createElement('iframe');f.sandbox='allow-scripts';f.srcdoc=code;document.body.append(f)}catch{}` +
-            `globalThis.mermaid={initialize(){},render:()=>new Promise((resolve)=>{setTimeout(()=>resolve({svg:'<svg></svg>'}),1500)})};`,
+            `globalThis.mermaid={initialize(){},render:()=>new Promise((resolve)=>{` +
+            `const started=Date.now();const check=()=>ran.size===2||Date.now()-started>5000` +
+            `?resolve({svg:'<svg data-ran="'+[...ran].sort().join(',')+'"></svg>'}):setTimeout(check,50);check()})};`,
           'utf8',
         );
       });
@@ -214,11 +244,10 @@ describe.skipIf(chromiumPath === undefined)(
           scriptPath: escaping,
         });
         try {
-          // Chromium may crash on a sandboxed srcdoc frame in a blank page,
-          // which fails the render; only the network matters here.
-          await mermaid.render(['graph TD; A-->B']).catch(() => null);
+          const drawn = await mermaid.render(['graph TD; A-->B']);
           await delay(1200);
 
+          expect(drawn).toEqual(['<svg data-ran="frame,popup"></svg>']);
           expect(neighbourHits).toBe(0);
           expect(neighbourUpgrades).toBe(0);
           expect(udpPackets).toBe(0);

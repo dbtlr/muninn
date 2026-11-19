@@ -4,7 +4,12 @@ import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 
 import { mediaDefinition } from '../artifacts/media.js';
-import { BASE_CHROMIUM_ARGS, DEAD_PROXY, SIGNALS_LEFT_TO_SERVER } from './chromium-launch.js';
+import {
+  BASE_CHROMIUM_ARGS,
+  closeQuietly,
+  DEAD_PROXY,
+  SIGNALS_LEFT_TO_SERVER,
+} from './chromium-launch.js';
 import type { MermaidRenderer } from './mermaid-renderer.js';
 import { createMermaidRenderer } from './mermaid-renderer.js';
 import type { ThumbnailRenderer, ThumbnailTarget } from './types.js';
@@ -169,18 +174,33 @@ function watchArtifactResponse(page: Page, url: string): () => boolean {
 // isolated world, and markup set that way never runs a script. markdown.ts
 // emits `<pre class="mermaid">` only for a ```mermaid fence and escapes any
 // raw HTML in the source, so every match is a fence and its text content is
-// the diagram source. A fence Mermaid cannot draw keeps its source.
+// the diagram source. A fence Mermaid cannot draw keeps its source, and so
+// does every fence when the drawing fails (reported): the preview is still
+// worth keeping. Only the render's deadline fails the render.
 async function drawMermaidFences(
   page: Page,
-  mermaid: MermaidRenderer,
-  signal: AbortSignal,
+  {
+    mermaid,
+    report,
+    signal,
+  }: { mermaid: MermaidRenderer; report: (message: string) => void; signal: AbortSignal },
 ): Promise<void> {
   const fences = page.locator('pre.mermaid');
   const texts = await fences.allTextContents();
   if (texts.length === 0) {
     return;
   }
-  const drawings = await mermaid.render(texts, signal);
+  let drawings: (string | null)[];
+  try {
+    drawings = await mermaid.render(texts, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    report(`Mermaid diagrams left as source in a thumbnail: ${message}`);
+    return;
+  }
   await fences.evaluateAll((elements, svgs) => {
     elements.forEach((element, index) => {
       const svg = svgs[index];
@@ -189,14 +209,6 @@ async function drawMermaidFences(
       }
     });
   }, drawings);
-}
-
-async function closeQuietly(context: BrowserContext): Promise<void> {
-  try {
-    await context.close();
-  } catch {
-    // Already closed by the render's own finally; nothing to do.
-  }
 }
 
 // One shared headless Chromium, launched on first use and relaunched after a
@@ -288,7 +300,7 @@ export function createPlaywrightRenderer({
     // Only a Markdown page: an HTML artifact is the author's own markup, so
     // a `pre.mermaid` there is not a fence this app rendered.
     if (mermaid !== undefined && mediaDefinition(target.mediaType).renderingMode === 'markdown') {
-      await drawMermaidFences(page, mermaid, signal);
+      await drawMermaidFences(page, { mermaid, report, signal });
     }
     const shot = await page.screenshot({ quality: JPEG_QUALITY, type: 'jpeg' });
     return new Uint8Array(shot);
@@ -334,10 +346,10 @@ export function createPlaywrightRenderer({
 
   return {
     close: async () => {
-      await mermaid?.close();
-      if (browser !== undefined) {
-        await (await browser).close();
-      }
+      await Promise.all([
+        mermaid?.close(),
+        browser === undefined ? undefined : browser.then(async (launched) => launched.close()),
+      ]);
     },
     render,
   };

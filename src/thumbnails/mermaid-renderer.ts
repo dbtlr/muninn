@@ -1,10 +1,15 @@
 import { readFile } from 'node:fs/promises';
 
 import type { Mermaid } from 'mermaid';
-import type { Browser, BrowserContext } from 'playwright-core';
+import type { Browser, BrowserContextOptions, LaunchOptions } from 'playwright-core';
 import { chromium } from 'playwright-core';
 
-import { BASE_CHROMIUM_ARGS, DEAD_PROXY, SIGNALS_LEFT_TO_SERVER } from './chromium-launch.js';
+import {
+  BASE_CHROMIUM_ARGS,
+  closeQuietly,
+  DEAD_PROXY,
+  SIGNALS_LEFT_TO_SERVER,
+} from './chromium-launch.js';
 
 // Draws Mermaid diagrams for gallery previews (see
 // docs/decisions/0010-thumbnail-mermaid-renderer.md). Artifact pages render
@@ -14,18 +19,16 @@ import { BASE_CHROMIUM_ARGS, DEAD_PROXY, SIGNALS_LEFT_TO_SERVER } from './chromi
 // preview before its screenshot.
 //
 // The page holds Mermaid's single-file bundle and nothing else. Diagram text
-// enters only as an argument to Muninn's own evaluate call, so it reaches
-// Mermaid as a string and is never parsed as HTML. The isolation does not
-// depend on Mermaid being free of bugs: the browser is launched with a proxy
-// nobody listens on and no bypass, not even loopback, so every connection
-// its network stack makes fails; WebRTC may only use the proxy, so it has no
-// UDP path either; and each context is offline with every request aborted.
+// enters only as an argument to Muninn's own evaluate call: Muninn never
+// inserts it as markup, and Mermaid parses it and sanitizes its labels under
+// `securityLevel: 'strict'`. The network isolation does not depend on Mermaid
+// being free of bugs; see mermaidLaunchOptions and MERMAID_CONTEXT_OPTIONS.
 export type MermaidRenderer = {
   close: () => Promise<void>;
   // One SVG per diagram text, in order. An entry is null where Mermaid could
   // not draw that text, and every entry is null while Mermaid rendering is
   // disabled (the bundle or Chromium is missing; reported once). Rejects when
-  // the signal aborts mid-render.
+  // the signal aborts, and when the drawing itself fails.
   render: (texts: readonly string[], signal?: AbortSignal) => Promise<(string | null)[]>;
 };
 
@@ -42,20 +45,53 @@ type MermaidRendererOptions = {
 // SVG's own styles, so it must not collide with an id on the preview page.
 const DIAGRAM_ID_PREFIX = 'thumbnail-diagram-';
 
+// The page the bundle runs in. The context's request filter answers this one
+// URL from memory and aborts every other request, so nothing is fetched. The
+// page has a real origin rather than about:blank because Chromium crashes
+// when a sandboxed srcdoc frame is added to a blank page.
+const PAGE_URL = 'http://mermaid.invalid/';
+const PAGE_HTML = '<!doctype html><html><body></body></html>';
+
+// The first network layer, fixed at launch for every frame and process the
+// browser ever starts, including a sandboxed frame or popup in a process of
+// its own.
+export function mermaidLaunchOptions(executablePath: string | undefined): LaunchOptions {
+  return {
+    args: [
+      ...BASE_CHROMIUM_ARGS,
+      // WebRTC ignores the proxy by default and sends UDP straight out; this
+      // restricts it to proxied connections, which all fail. (Chromium
+      // ignores the content-shell spelling, --force-webrtc-ip-handling-policy.)
+      '--webrtc-ip-handling-policy=disable_non_proxied_udp',
+      // This browser runs script fed by artifact text without Chromium's own
+      // sandbox (see BASE_CHROMIUM_ARGS); the interpreter alone leaves a
+      // smaller surface for an engine exploit than the JIT compilers, and
+      // diagrams draw as fast without them.
+      '--js-flags=--jitless',
+    ],
+    // `<-loopback>` removes Chromium's implicit "never proxy loopback" rule,
+    // and nothing else bypasses: every address goes to the dead proxy,
+    // including this server's own.
+    proxy: { bypass: '<-loopback>', server: DEAD_PROXY },
+    ...(executablePath === undefined ? {} : { executablePath }),
+    ...SIGNALS_LEFT_TO_SERVER,
+  };
+}
+
+// The second network layer, per render: offline, no service workers, and a
+// request filter (installed in `draw`) that aborts everything but PAGE_URL.
+export const MERMAID_CONTEXT_OPTIONS = {
+  acceptDownloads: false,
+  offline: true,
+  serviceWorkers: 'block',
+} as const satisfies BrowserContextOptions;
+
 function defaultReport(message: string): void {
   process.stderr.write(`${message}\n`);
 }
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-async function closeQuietly(context: BrowserContext): Promise<void> {
-  try {
-    await context.close();
-  } catch {
-    // Already closed; nothing to do.
-  }
 }
 
 // One headless Chromium for Mermaid alone, launched on first use and
@@ -71,29 +107,8 @@ export function createMermaidRenderer({
   let browser: Promise<Browser> | undefined;
   let disabled = false;
 
-  function disable(reason: string): void {
-    disabled = true;
-    report(`Mermaid thumbnails disabled, ${reason}`);
-  }
-
   async function launch(): Promise<Browser> {
-    const launched = await chromium.launch({
-      args: [
-        ...BASE_CHROMIUM_ARGS,
-        // WebRTC ignores the proxy by default and sends UDP straight out;
-        // this restricts it to proxied connections, which all fail. It is a
-        // launch switch, so it holds in every frame and process, including
-        // a sandboxed frame or popup in a process of its own. (Chromium
-        // ignores the content-shell spelling, --force-webrtc-ip-handling-policy.)
-        '--webrtc-ip-handling-policy=disable_non_proxied_udp',
-      ],
-      // `<-loopback>` removes Chromium's implicit "never proxy loopback"
-      // rule, and nothing else bypasses: every address goes to the dead
-      // proxy, including this server's own.
-      proxy: { bypass: '<-loopback>', server: DEAD_PROXY },
-      ...(executablePath === undefined ? {} : { executablePath }),
-      ...SIGNALS_LEFT_TO_SERVER,
-    });
+    const launched = await chromium.launch(mermaidLaunchOptions(executablePath));
     launched.on('disconnected', () => {
       browser = undefined;
     });
@@ -113,7 +128,8 @@ export function createMermaidRenderer({
     } catch (error) {
       browser = undefined;
       if (!disabled) {
-        disable(describe(error));
+        disabled = true;
+        report(`Mermaid thumbnails disabled, ${describe(error)}`);
       }
       return null;
     }
@@ -125,21 +141,25 @@ export function createMermaidRenderer({
     texts: readonly string[],
     signal: AbortSignal | undefined,
   ): Promise<(string | null)[]> {
-    signal?.throwIfAborted();
-    const context = await launched.newContext({
-      acceptDownloads: false,
-      offline: true,
-      serviceWorkers: 'block',
-    });
-    // Closing the context makes whatever step is in flight reject.
+    const context = await launched.newContext(MERMAID_CONTEXT_OPTIONS);
+    // Closing the context makes whatever step is in flight reject. A signal
+    // that aborted before the listener was added never calls it, so that
+    // case closes the context straight away.
     const abort = (): void => {
       void closeQuietly(context);
     };
     signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted === true) {
+      abort();
+    }
     try {
-      await context.route('**/*', (route) => route.abort('blockedbyclient'));
+      await context.route('**/*', (route) =>
+        route.request().url() === PAGE_URL
+          ? route.fulfill({ body: PAGE_HTML, contentType: 'text/html' })
+          : route.abort('blockedbyclient'),
+      );
       const page = await context.newPage();
-      await page.setContent('<!doctype html><html><body></body></html>');
+      await page.goto(PAGE_URL);
       await page.addScriptTag({ content: script });
       return await page.evaluate(
         async ({ prefix, diagrams }) => {

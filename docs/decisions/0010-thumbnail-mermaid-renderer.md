@@ -30,14 +30,15 @@ so it cannot run without network access.
   renderer escapes raw HTML and emits `pre.mermaid` only for a mermaid fence, so each match is a
   fence and its text is the diagram source. HTML artifacts skip this step, so a `pre.mermaid` in an
   author's own markup is never drawn.
-- **A second Chromium for Mermaid alone.** It is launched on first use and runs scripts. Its page
-  holds Mermaid's single-file bundle (`mermaid/dist/mermaid.min.js`), which the build copies to
-  `dist/public/renderer/mermaid.min.js`. Muninn's own `evaluate` call passes the diagram text as a
-  string argument. The text is never parsed as HTML, and nothing else from the artifact reaches
-  this browser. Mermaid runs with `securityLevel: 'strict'` and the dark theme, which matches the
-  renderer's dark color scheme.
-- **No network path, at launch and per context.** The safety of this browser does not depend on
-  Mermaid being free of bugs:
+- **A second Chromium for Mermaid alone.** It is launched on first use and runs scripts, with
+  the JavaScript JIT off (`--js-flags=--jitless`). Its page holds Mermaid's single-file bundle
+  (`mermaid/dist/mermaid.min.js`), which the build copies to `dist/public/renderer/mermaid.min.js`.
+  Muninn's own `evaluate` call passes the diagram text as a string argument, and Muninn never
+  inserts it as markup. Mermaid parses the text and sanitizes its labels under
+  `securityLevel: 'strict'`. Nothing else from the artifact reaches this browser. Mermaid draws in
+  its dark theme, which matches the renderer's dark color scheme.
+- **No network path, at launch and per render.** The network isolation of this browser does not
+  depend on Mermaid being free of bugs:
   - The browser is launched with a proxy that nothing listens on, and with `<-loopback>` as its
     only bypass rule. That rule removes Chromium's implicit loopback exception, so every HTTP and
     WebSocket connection fails, including one to this server.
@@ -45,19 +46,26 @@ so it cannot run without network access.
     has no UDP path. Chromium ignores the content-shell spelling `--force-webrtc-ip-handling-policy`.
   - Launch switches apply to every frame and process, including a sandboxed frame or popup in a
     process of its own.
-  - Each drawing gets a fresh context. The context is offline, blocks service workers, and aborts
-    every request.
-  The renderer tests load a hostile bundle that tries fetch, WebSocket, workers, an iframe, a
-  popup, and WebRTC, and assert that nothing arrives. When this decision was recorded, those tests
-  also passed with either layer removed.
+  - Each render's diagrams are drawn in one fresh context. The context is offline and blocks
+    service workers. Its request filter answers the page's own URL, `http://mermaid.invalid/`, from
+    memory and aborts every other request. The page has a real origin because Chromium crashes when
+    a sandboxed srcdoc frame is added to an `about:blank` page.
+
+  Unit tests pin the settings of both layers. The renderer tests load hostile bundles that try
+  fetch, WebSocket, workers, an iframe, a sandboxed frame, a popup, and WebRTC. Each probe confirms
+  that it ran, and the tests assert that nothing arrives. When this decision was recorded, those
+  tests also passed with either layer removed.
 - **The drawings go back to the script-off page.** The renderer replaces each fence with its SVG
   through the isolated world, then takes the screenshot. A script in that markup does not run,
   because the page has scripts off. Any load the SVG declares goes through the artifact browser's
   existing fences. A diagram that Mermaid cannot parse keeps its source.
-- **One deadline.** The render's deadline also closes a Mermaid drawing that is still running.
+- **One deadline.** The render's deadline also closes a Mermaid drawing that is still running, and
+  a deadline that passes fails the render. The second browser's first launch falls inside that
+  deadline.
 - **Degrades to source.** If the bundle file is missing, or the second Chromium fails to launch,
-  the renderer reports this once. The fences then show as source, and every other part of the
-  preview renders as before.
+  the renderer reports this once and stops trying. If one drawing fails for another reason, such
+  as a crash, the renderer reports it for that preview. Either way the fences show as source, and
+  every other part of the preview renders as before.
 
 ## Considered options
 
@@ -78,8 +86,15 @@ so it cannot run without network access.
 - A host that renders a Markdown artifact with a diagram runs a second headless Chromium. It is
   kept running until shutdown, and adds its memory to the first.
 - The build output includes `dist/public/renderer/mermaid.min.js`, about 3.5 MB. The server serves
-  it under `/assets/renderer/` like every built asset, and the Worker uploads it with its static
-  assets. It is Mermaid's public bundle, so serving it exposes nothing.
+  it under `/assets/renderer/` like every built asset. The Worker uploads it with its static assets
+  and serves it at `/renderer/` as well, although nothing there uses it. It is Mermaid's public
+  bundle, so serving it exposes nothing.
+- Neither browser has Chromium's own sandbox, because the runtime container lacks the kernel
+  features it needs. The Mermaid browser therefore runs artifact-supplied diagram text through
+  Mermaid with no process sandbox behind it. A Mermaid or DOMPurify flaw that runs script, chained
+  with a Chromium engine exploit, would run code on the host outside the network fences. Turning
+  the JIT off narrows that surface but does not remove it. Diagrams come from the owner's own
+  agents on a trusted network, the same trust boundary the renderer already assumes.
 - The Worker has no thumbnail renderer. A future Browser Rendering adapter that draws diagrams must
   meet the same conditions: Muninn's bundle only, diagram text as data, and no network path from
   the page that runs it.
