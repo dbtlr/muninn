@@ -65,10 +65,12 @@ so it cannot run without network access.
 
   The tests check this on both full Chromium and `chromium-headless-shell`:
   - Unit tests pin the settings of both layers.
-  - Hostile bundles try fetch, WebSocket, workers, an iframe, a sandboxed frame, a popup, and
-    WebRTC. Each probe confirms that it ran, and nothing arrives: with both layers, with the launch
-    layer alone, and with the context layer alone. The single-layer tests run the probes from a
-    blank page, which Chromium's loopback refusal does not cover, so a leak would show.
+  - A hostile bundle tries fetch, beacon, image, WebSocket, workers, an iframe, and WebRTC from the
+    page, and nothing arrives: with both layers, with the launch layer alone, and with the context
+    layer alone. The test confirms that the bundle ran to its end. The single-layer tests run it
+    from a blank page, which Chromium's loopback refusal does not cover, so a leak would show.
+  - A second bundle makes the same attempts from a sandboxed frame and a popup, each in a process
+    of its own, and each confirms that it ran. This runs with both layers only.
   - With the context online, the page's fetch, image, beacon, and iframe requests fail at the
     request filter.
   - A Chromium NetLog test asserts that a TURN server hostname causes no DNS transaction. This

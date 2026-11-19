@@ -95,8 +95,10 @@ export function mermaidLaunchOptions(executablePath: string | undefined): Launch
 }
 
 // The second network layer, per render: offline, no service workers, and a
-// request filter (installed by openMermaidContext) that aborts everything but
-// PAGE_URL.
+// request filter (installed by openMermaidContext) that aborts every request
+// it sees but PAGE_URL. The filter does not see WebSocket, WebRTC, or every
+// request from a sandboxed srcdoc frame or a blank page; offline mode and the
+// launch layer cover those.
 export const MERMAID_CONTEXT_OPTIONS = {
   acceptDownloads: false,
   offline: true,
@@ -105,7 +107,7 @@ export const MERMAID_CONTEXT_OPTIONS = {
 
 // A context with both per-render settings: MERMAID_CONTEXT_OPTIONS and a
 // request filter that answers PAGE_URL from memory and aborts every other
-// request.
+// request it sees (see MERMAID_CONTEXT_OPTIONS for what it does not see).
 export async function openMermaidContext(browser: Browser): Promise<BrowserContext> {
   const context = await browser.newContext(MERMAID_CONTEXT_OPTIONS);
   try {

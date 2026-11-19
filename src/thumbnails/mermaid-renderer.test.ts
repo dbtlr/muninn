@@ -448,7 +448,7 @@ describe.skipIf(chromiumPath === undefined)(
       // that as ERR_BLOCKED_BY_CLIENT). Counting hits would prove nothing
       // here: Chromium also refuses requests from this public-looking page to
       // loopback, and WebSocket and WebRTC are not routed at all.
-      it('aborts every request but the page itself at the request filter', async () => {
+      it("aborts the page's own HTTP requests at the request filter", async () => {
         const browser: Browser = await chromium.launch({
           args: BASE_CHROMIUM_ARGS,
           ...(chromiumPath === undefined ? {} : { executablePath: chromiumPath }),
