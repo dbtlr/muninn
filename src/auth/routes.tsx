@@ -357,6 +357,8 @@ export function installOwnerAuth(
       ...showOnceCookieOptions('/keys'),
       maxAge: NEW_KEY_COOKIE_SECONDS,
     });
+    // The redirect carries the key in its Set-Cookie, so no cache may keep it.
+    c.header('Cache-Control', 'no-store');
     return c.redirect('/keys', 303);
   });
 
