@@ -37,6 +37,15 @@ export async function closeQuietly(context: BrowserContext): Promise<void> {
   }
 }
 
+// Closes a context whose creation a render stopped waiting for, once it exists.
+export async function closeWhenCreated(creating: Promise<BrowserContext>): Promise<void> {
+  try {
+    await closeQuietly(await creating);
+  } catch {
+    // Never created; nothing to close.
+  }
+}
+
 // Awaits `promise` only to mark its rejection handled.
 export async function ignoreFailure(promise: Promise<unknown>): Promise<void> {
   try {

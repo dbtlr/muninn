@@ -12,6 +12,7 @@ import { chromium } from 'playwright-core';
 import {
   BASE_CHROMIUM_ARGS,
   closeQuietly,
+  closeWhenCreated,
   DEAD_PROXY,
   ignoreFailure,
   SIGNALS_LEFT_TO_SERVER,
@@ -163,15 +164,6 @@ function defaultReport(message: string): void {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-// Closes a context whose creation a render stopped waiting for.
-async function closeWhenCreated(creating: Promise<BrowserContext>): Promise<void> {
-  try {
-    await closeQuietly(await creating);
-  } catch {
-    // Never created; nothing to close.
-  }
 }
 
 // One headless Chromium for Mermaid alone, launched on first use and

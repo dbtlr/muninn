@@ -481,7 +481,7 @@ describe.skipIf(chromiumPath === undefined)(
             mediaType: 'text/markdown',
             url: `${baseUrl}/a/diagrams`,
           }),
-        ).rejects.toThrow(/closed|aborted/u);
+        ).rejects.toThrow(/passed its 3000 ms deadline/u);
 
         expect(Date.now() - started).toBeLessThan(6000);
       } finally {
@@ -495,7 +495,7 @@ describe.skipIf(chromiumPath === undefined)(
 
       await expect(
         impatient.render({ id: 'slow', mediaType: 'text/html', url: `${baseUrl}/a/slow` }),
-      ).rejects.toThrow(/aborted|closed|Timeout/u);
+      ).rejects.toThrow(/passed its 1500 ms deadline/u);
 
       expect(Date.now() - started).toBeLessThan(4000);
       await impatient.close();
@@ -528,11 +528,41 @@ describe.skipIf(chromiumPath === undefined)(
 
         await expect(
           impatient.render({ id: 'slow', mediaType: 'text/html', url: `${baseUrl}/a/slow` }),
-        ).rejects.toThrow(/aborted/u);
+        ).rejects.toThrow(/passed its 1000 ms deadline/u);
 
         expect(Date.now() - started).toBeLessThan(timeoutMs + 2000);
         const browser = await launches.mock.results[0]?.value;
         await expect.poll(() => browser?.contexts().length, { timeout: 5000 }).toBe(0);
+      } finally {
+        launches.mockRestore();
+        await impatient.close();
+      }
+    });
+
+    it('settles a render whose browser is slow to create its context, then closes the context', async () => {
+      const timeoutMs = 1000;
+      const launch = chromium.launch.bind(chromium);
+      const launches = vi.spyOn(chromium, 'launch');
+      launches.mockImplementation(async (...args) => {
+        const browser = await launch(...args);
+        const newContext = browser.newContext.bind(browser);
+        browser.newContext = async (...options) => {
+          await delay(timeoutMs * 3);
+          return newContext(...options);
+        };
+        return browser;
+      });
+      const impatient = createPlaywrightRenderer({ executablePath: chromiumPath, timeoutMs });
+      try {
+        const started = Date.now();
+
+        await expect(
+          impatient.render({ id: 'slow', mediaType: 'text/html', url: `${baseUrl}/a/slow` }),
+        ).rejects.toThrow(/passed its 1000 ms deadline/u);
+
+        expect(Date.now() - started).toBeLessThan(timeoutMs * 2);
+        const browser = await launches.mock.results[0]?.value;
+        await expect.poll(() => browser?.contexts().length, { timeout: 6000 }).toBe(0);
       } finally {
         launches.mockRestore();
         await impatient.close();
