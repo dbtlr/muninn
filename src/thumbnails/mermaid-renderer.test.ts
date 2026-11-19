@@ -13,7 +13,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Browser, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
-import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 import { BASE_CHROMIUM_ARGS } from './chromium-launch.js';
 import {
@@ -280,6 +280,8 @@ describe.skipIf(chromiumPath === undefined)(
         'globalThis.mermaid={initialize(){},render:()=>new Promise(()=>{})};',
         'utf8',
       );
+      // Keeps hold of the Mermaid browser, to count what each abort leaves open.
+      const launches = vi.spyOn(chromium, 'launch');
       const mermaid = createMermaidRenderer({ executablePath: chromiumPath, scriptPath: stuck });
       try {
         // Warm the browser, so each abort below lands while a context and
@@ -297,9 +299,13 @@ describe.skipIf(chromiumPath === undefined)(
           }),
         );
 
-        // Every render gives up within moments of its own abort.
+        // Every render gives up within moments of its own abort, and every
+        // context it opened is closed behind it.
         expect(outcomes.filter((lateMs) => lateMs > 1000)).toEqual([]);
+        const browser = await launches.mock.results[0]?.value;
+        await expect.poll(() => browser?.contexts().length, { timeout: 5000 }).toBe(0);
       } finally {
+        launches.mockRestore();
         await mermaid.close();
       }
     });
@@ -379,6 +385,13 @@ describe.skipIf(chromiumPath === undefined)(
         );
       });
 
+      // Each test starts from zero, so a leak fails the test that caused it.
+      beforeEach(() => {
+        neighbourHits = 0;
+        neighbourUpgrades = 0;
+        udpPackets = 0;
+      });
+
       afterAll(async () => {
         await promisify(neighbour.close.bind(neighbour))();
         udp.close();
@@ -415,8 +428,11 @@ describe.skipIf(chromiumPath === undefined)(
           ...(chromiumPath === undefined ? {} : { executablePath: chromiumPath }),
         });
         try {
+          // A blank page, not the Mermaid page: Chromium itself refuses
+          // requests from that public-looking origin to loopback, which
+          // would hide whether this layer stops HTTP and WebSocket.
           const page = await (await openMermaidContext(browser)).newPage();
-          await page.goto('http://mermaid.invalid/');
+          await page.setContent('<!doctype html><body></body>');
           await runHostileBundle(page);
 
           expect(neighbourHits).toBe(0);

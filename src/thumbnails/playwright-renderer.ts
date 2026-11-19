@@ -328,8 +328,9 @@ export function createPlaywrightRenderer({
     });
     // One deadline for the whole render: closing the context makes whatever
     // step is in flight reject, so a page that keeps the network busy and
-    // then spins cannot hold the queue past timeoutMs. The abort closes a
-    // Mermaid drawing in flight the same way.
+    // then spins cannot hold the queue past timeoutMs. The abort also ends
+    // the Mermaid step: the renderer stops waiting for it at once and closes
+    // its context in the background (see mermaid-renderer.ts).
     const deadlineReached = new AbortController();
     const deadline = setTimeout(() => {
       deadlineReached.abort();

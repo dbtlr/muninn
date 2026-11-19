@@ -51,7 +51,8 @@ type MermaidRendererOptions = {
 const DIAGRAM_ID_PREFIX = 'thumbnail-diagram-';
 
 // The page the bundle runs in. The context's request filter answers this one
-// URL from memory and aborts every other request, so nothing is fetched. The
+// URL from memory and aborts every other request it sees, so nothing is
+// fetched; offline mode and the launch layer cover what it does not see. The
 // page has a real origin rather than about:blank because Chromium crashes
 // when a sandboxed srcdoc frame is added to a blank page.
 const PAGE_URL = 'http://mermaid.invalid/';

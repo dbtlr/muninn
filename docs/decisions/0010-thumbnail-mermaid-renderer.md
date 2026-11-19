@@ -54,8 +54,10 @@ so it cannot run without network access.
     process of its own.
   - Each render's diagrams are drawn in one fresh context. The context is offline and blocks
     service workers. Its request filter answers the page's own URL, `http://mermaid.invalid/`, from
-    memory and aborts every other request. The page has a real origin because Chromium crashes when
-    a sandboxed srcdoc frame is added to an `about:blank` page.
+    memory and aborts every other request that Playwright routes. Playwright does not route
+    WebSocket, WebRTC, or every request from a sandboxed `srcdoc` frame or an `about:blank` page;
+    offline mode and the launch layer cover those. The page has a real origin because Chromium
+    crashes when a sandboxed srcdoc frame is added to an `about:blank` page.
 
   The launch layer alone stops HTTP, WebSocket, WebRTC, and DNS. The context layer alone stops
   HTTP, WebSocket, and WebRTC; DNS depends on the launch layer only. Chromium adds a third, incidental
@@ -65,8 +67,10 @@ so it cannot run without network access.
   - Unit tests pin the settings of both layers.
   - Hostile bundles try fetch, WebSocket, workers, an iframe, a sandboxed frame, a popup, and
     WebRTC. Each probe confirms that it ran, and nothing arrives: with both layers, with the launch
-    layer alone, and with the context layer alone.
-  - With the context online, every request but the page's own fails at the request filter.
+    layer alone, and with the context layer alone. The single-layer tests run the probes from a
+    blank page, which Chromium's loopback refusal does not cover, so a leak would show.
+  - With the context online, the page's fetch, image, beacon, and iframe requests fail at the
+    request filter.
   - A Chromium NetLog test asserts that a TURN server hostname causes no DNS transaction. This
     guards full Chromium, the build that looks the name up; the headless shell makes no lookup.
 - **The drawings go back to the script-off page.** The renderer replaces each fence with its SVG
