@@ -42,10 +42,12 @@ so it cannot run without network access.
   - The browser is launched with a proxy that nothing listens on, and with `<-loopback>` as its
     only bypass rule. That rule removes Chromium's implicit loopback exception, so every HTTP and
     WebSocket connection fails, including one to this server.
-  - `--webrtc-ip-handling-policy=disable_non_proxied_udp` restricts WebRTC to the proxy, so WebRTC
-    has no UDP path. Chromium ignores the content-shell spelling `--force-webrtc-ip-handling-policy`.
-  - `--host-resolver-rules=MAP * ~NOTFOUND` makes every hostname fail to resolve. Without it,
-    WebRTC looks up the hostname of a TURN-over-TCP server through the host's resolver, which would
+  - `disable_non_proxied_udp` restricts WebRTC to the proxy, so WebRTC has no UDP path. Each
+    Chromium build honors one spelling of the switch and ignores the other, so both are passed. Full
+    Chromium reads `--webrtc-ip-handling-policy`. `chromium-headless-shell`, which the Docker image
+    runs, reads `--force-webrtc-ip-handling-policy`.
+  - `--host-resolver-rules=MAP * ~NOTFOUND` makes every hostname fail to resolve. Without it, full
+    Chromium looks up the hostname of a TURN-over-TCP server through the host's resolver, which would
     give a script an outbound DNS channel. Nothing in this browser needs a name: the proxy is an IP
     literal, and the page is answered from memory.
   - Launch switches apply to every frame and process, including a sandboxed frame or popup in a
@@ -59,7 +61,7 @@ so it cannot run without network access.
   fetch, WebSocket, workers, an iframe, a sandboxed frame, a popup, and WebRTC. Each probe confirms
   that it ran, and the tests assert that nothing arrives. A Chromium NetLog test asserts that a TURN
   server hostname causes no DNS transaction. When this decision was recorded, those
-  tests also passed with either layer removed.
+  tests also passed with either layer removed, on both full Chromium and `chromium-headless-shell`.
 - **The drawings go back to the script-off page.** The renderer replaces each fence with its SVG
   through the isolated world, then takes the screenshot. A script in that markup does not run,
   because the page has scripts off. Any load the SVG declares goes through the artifact browser's

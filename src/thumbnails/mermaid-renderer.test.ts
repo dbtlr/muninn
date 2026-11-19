@@ -44,6 +44,7 @@ describe('mermaidLaunchOptions', () => {
 
     expect(options.proxy).toEqual({ bypass: '<-loopback>', server: 'http://127.0.0.1:9' });
     expect(options.args).toContain('--webrtc-ip-handling-policy=disable_non_proxied_udp');
+    expect(options.args).toContain('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
     expect(options.args).toContain('--host-resolver-rules=MAP * ~NOTFOUND');
     expect(options.args).toContain('--js-flags=--jitless');
     expect(options.executablePath).toBe('/usr/bin/chromium');
@@ -56,23 +57,28 @@ describe('MERMAID_CONTEXT_OPTIONS', () => {
   });
 });
 
-// The DNS transactions a Chromium NetLog recorded, by hostname. Chromium
-// finishes the JSON on a clean exit; a log cut short is closed here.
-async function dnsLookups(netLogPath: string): Promise<string[]> {
+// The host-resolver and DNS events a Chromium NetLog recorded for
+// `hostname`. Full Chromium logs a lookup as DNS_TRANSACTION and the system
+// resolver as HOST_RESOLVER_* tasks; matching on the name covers both.
+// Chromium finishes the JSON on a clean exit; a log cut short is closed here.
+async function resolverEventsFor(netLogPath: string, hostname: string): Promise<string[]> {
   const raw = await readFile(netLogPath, 'utf8');
   let log: {
     constants: { logEventTypes: Record<string, number> };
-    events: { params?: { hostname?: string }; type: number }[];
+    events: { params?: unknown; type: number }[];
   };
   try {
     log = JSON.parse(raw);
   } catch {
     log = JSON.parse(`${raw.trimEnd().replace(/,$/u, '')}]}`);
   }
-  const dnsTransaction = log.constants.logEventTypes.DNS_TRANSACTION;
+  const names = new Map(
+    Object.entries(log.constants.logEventTypes).map(([name, type]) => [type, name]),
+  );
   return log.events
-    .filter((event) => event.type === dnsTransaction)
-    .map((event) => event.params?.hostname ?? '');
+    .map((event) => ({ name: names.get(event.type) ?? '', params: JSON.stringify(event.params) }))
+    .filter(({ name, params }) => /DNS|HOST_RESOLVER/u.test(name) && params?.includes(hostname))
+    .map(({ name }) => name);
 }
 
 describe('createMermaidRenderer without a bundle', () => {
@@ -334,7 +340,9 @@ describe.skipIf(chromiumPath === undefined)(
           await mermaid.close();
         }
 
-        await expect(dnsLookups(netLog)).resolves.toEqual([]);
+        await expect(resolverEventsFor(netLog, 'muninn-dns-probe.example.org')).resolves.toEqual(
+          [],
+        );
       });
 
       it('refuses requests from frames and popups in other processes', async () => {

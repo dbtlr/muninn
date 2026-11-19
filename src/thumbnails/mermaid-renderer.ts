@@ -60,9 +60,13 @@ export function mermaidLaunchOptions(executablePath: string | undefined): Launch
     args: [
       ...BASE_CHROMIUM_ARGS,
       // WebRTC ignores the proxy by default and sends UDP straight out; this
-      // restricts it to proxied connections, which all fail. (Chromium
-      // ignores the content-shell spelling, --force-webrtc-ip-handling-policy.)
+      // restricts it to proxied connections, which all fail. Each Chromium
+      // build honors one spelling and ignores the other: full Chromium
+      // (CI, desktops) reads --webrtc-ip-handling-policy, and
+      // chromium-headless-shell (the Docker image) reads the content-shell
+      // --force-webrtc-ip-handling-policy. Both are passed.
       '--webrtc-ip-handling-policy=disable_non_proxied_udp',
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
       // No name resolves. WebRTC resolves a TURN-over-TCP server's hostname
       // through the host's resolver even with every connection proxied,
       // which would let a script beacon or exfiltrate through DNS queries.
