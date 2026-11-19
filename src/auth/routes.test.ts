@@ -322,7 +322,8 @@ describe('with an owner password', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toContain('no-store');
-    expect(res.headers.get('set-cookie')).toMatch(/Max-Age=0/u);
+    // A browser deletes a cookie only when the path matches the one it set.
+    expect(res.headers.get('set-cookie')).toMatch(/Max-Age=0; Path=\/keys(;|$)/u);
     const body = await res.text();
     const key = SHOWN_KEY.exec(body)?.[0];
     expect(key).toBeDefined();
@@ -330,6 +331,48 @@ describe('with an owner password', () => {
     const later = await keysPage(cookie);
     expect(later).toContain('laptop agent');
     expect(later).not.toContain(key);
+  });
+
+  it('keeps the redirect that carries a new key, and the page that shows it, out of every cache', async () => {
+    const cookie = await logIn();
+
+    const created = await testApp.request('/keys', formPost({ name: 'agent' }, { Cookie: cookie }));
+    const shown = await testApp.request('/keys', {
+      headers: { Cookie: `${cookie}; ${cookiePair(created)}` },
+    });
+
+    expect(created.status).toBe(303);
+    expect(created.headers.get('cache-control')).toBe('private, no-store');
+    expect(shown.status).toBe(200);
+    expect(shown.headers.get('cache-control')).toBe('private, no-store');
+  });
+
+  it('keeps a new key in a minute-long cookie for the key page only, out of reach of scripts and other sites', async () => {
+    const cookie = await logIn();
+
+    const header =
+      (await testApp.request('/keys', formPost({ name: 'agent' }, { Cookie: cookie }))).headers.get(
+        'set-cookie',
+      ) ?? '';
+
+    expect(header).toMatch(/Max-Age=60(;|$)/u);
+    expect(header).toMatch(/Path=\/keys(;|$)/u);
+    expect(header).toMatch(/HttpOnly/u);
+    expect(header).toMatch(/SameSite=Strict/u);
+    expect(header).not.toMatch(/Secure/u);
+  });
+
+  it('marks the new-key cookie Secure when the public base URL is HTTPS', async () => {
+    const cookie = await logIn();
+    process.env.MUNINN_PUBLIC_BASE_URL = 'https://artifacts.example';
+
+    const res = await testApp.request(
+      '/keys',
+      formPost({ name: 'agent' }, { Cookie: cookie, Origin: 'https://artifacts.example' }),
+    );
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('set-cookie')).toMatch(/Secure/u);
   });
 
   it('creates no second key when the page is refreshed after creating one', async () => {
