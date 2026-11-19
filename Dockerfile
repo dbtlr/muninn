@@ -9,8 +9,16 @@
 # WORKDIR and the COPY layout below such that dist/server.js ends up at
 # <WORKDIR>/dist/server.js and dist/public/ stays alongside it.
 
-FROM node:24-alpine AS builder
+FROM node:24-trixie-slim AS builder
 WORKDIR /app
+# apt runs without a terminal during the build; this keeps debconf from
+# trying interactive frontends. ARG does not reach the running container.
+ARG DEBIAN_FRONTEND=noninteractive
+# Vite+ builds its HTTP client from the system CA store, which Debian slim
+# leaves out, and panics without one.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN VITE_GIT_HOOKS=0 pnpm install --frozen-lockfile
@@ -18,22 +26,39 @@ COPY tsconfig.json vite.config.ts ./
 COPY src ./src
 RUN pnpm run build
 
-FROM node:24-alpine AS runner
+FROM node:24-trixie-slim AS runner
 WORKDIR /app
+ARG DEBIAN_FRONTEND=noninteractive
 RUN corepack enable
 
 # Gallery previews are screenshots taken by a headless Chromium driven over
-# CDP by playwright-core (src/thumbnails/playwright-renderer.ts). Alpine's own
-# chromium package is far smaller than Playwright's bundled browser build.
+# CDP by playwright-core (src/thumbnails/playwright-renderer.ts). Debian's
+# chromium-headless-shell is Chromium's headless-only build: it draws in
+# software, without a display server or GPU.
+# Debian's Chromium packages still depend on Mesa's GPU drivers, which bring
+# LLVM (about 250 MB together). The headless shell links only libgbm, and
+# libgbm loads the drivers just for GPU work, so they are removed by exact
+# name after the install. apt then reports their dependents as broken: do not
+# apt-get install into this image. `dpkg --remove` skips a package that is not
+# installed, so `dpkg --status` first fails the build if Debian renames one,
+# and the `find` after it fails the build if LLVM or gallium files remain (a
+# renamed package behind a transitional one), rather than shipping the
+# drivers again.
 # Inter is the sans face (close to the macOS system font the pages are
 # designed on), DejaVu covers the mono and fallback glyphs, Noto the emoji.
 # Chromium resolves the CSS generic families through fontconfig, and without
 # the aliases below `system-ui` matches nothing in particular and numerals can
 # come out of the emoji font; the aliases pin the generics Chromium really
 # asks fontconfig for (system-ui, sans-serif, monospace) to a real face. The
-# CSS ui-* names are not generics on Linux and fall through to these.
-# Alpine's fonts.conf includes conf.d only (not local.conf), hence the path.
-RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates font-inter font-dejavu font-noto-emoji \
+# CSS ui-* names are not generics on Linux and fall through to these. The
+# file sorts before Debian's 60-latin.conf, so its preferences come first.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends chromium-headless-shell ca-certificates \
+    fonts-inter fonts-dejavu-core fonts-noto-color-emoji \
+  && dpkg --status libgl1-mesa-dri mesa-libgallium libllvm19 libz3-4 > /dev/null \
+  && dpkg --remove --force-depends libgl1-mesa-dri mesa-libgallium libllvm19 libz3-4 \
+  && test -z "$(find /usr/lib \( -name 'libLLVM*' -o -name 'libgallium*' \) -print -quit)" \
+  && rm -rf /var/lib/apt/lists/* \
   && printf '%s\n' \
     '<?xml version="1.0"?>' \
     '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
@@ -49,9 +74,12 @@ ENV MUNINN_PORT=4242
 ENV MUNINN_DATABASE_PATH=/app/data/database/artifacts.db
 ENV MUNINN_FILES_DIR=/app/data/files
 ENV MUNINN_THUMBS_DIR=/app/data/thumbs
-ENV MUNINN_CHROMIUM_PATH=/usr/bin/chromium
+ENV MUNINN_CHROMIUM_PATH=/usr/bin/chromium-headless-shell
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile --prod --ignore-scripts
+# The runtime needs node_modules only: pnpm's package store and corepack's
+# copy of pnpm (about 230 MB together) stay out of the layer.
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts \
+  && rm -rf /root/.cache /root/.local/share/pnpm
 COPY --from=builder /app/dist ./dist
 # The SQL migrations are read at startup from <app root>/migrations.
 COPY migrations ./migrations
@@ -69,9 +97,10 @@ USER node
 EXPOSE ${MUNINN_PORT}
 
 # Liveness probe: hits `/` so `docker ps` and any orchestrator that gates on
-# container health can see the server is actually bound. wget is the busybox
-# implementation bundled in node:*-alpine.
+# container health can see the server is actually bound. Debian slim has no
+# wget or curl, so Node's fetch does the request; it follows the redirect to
+# /login when owner login is on.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO- "http://localhost:${MUNINN_PORT}/" || exit 1
+  CMD ["node", "-e", "fetch(`http://localhost:${process.env.MUNINN_PORT}/`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 
 CMD ["node", "dist/server.js"]

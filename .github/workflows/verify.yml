@@ -94,3 +94,30 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: docker build --tag muninn:ci .
+      # The image removes Mesa's GPU drivers that Debian's Chromium depends on
+      # (see the Dockerfile). Rendering one thumbnail on this amd64 runner
+      # proves the headless shell still draws without them on the deployed
+      # architecture, and that the container reaches healthy.
+      - name: Render a thumbnail in the image
+        run: |
+          set -o pipefail
+          # A failing command prints the container's log before the step fails.
+          trap 'docker logs muninn-ci' ERR
+          docker run --detach --name muninn-ci --publish 127.0.0.1:4242:4242 muninn:ci
+          for attempt in $(seq 1 60); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' muninn-ci)" = healthy ] && break
+            sleep 1
+          done
+          docker inspect --format '{{.State.Health.Status}}' muninn-ci | grep --quiet --line-regexp healthy
+          id=$(curl --fail --silent --show-error --request POST http://127.0.0.1:4242/mcp \
+            --header 'Content-Type: application/json' \
+            --header 'Accept: application/json, text/event-stream' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_artifact","arguments":{"title":"CI","description":"Thumbnail smoke test","project":"ci","mediaType":"text/markdown","content":"# Smoke 🎉\n\nInter 0123456789"}}}' \
+            | sed -n 's/^data: //p; /^{/p' | head -n 1 | jq -r '.result.content[0].text | fromjson | .id')
+          for attempt in $(seq 1 60); do
+            type=$(curl --fail --silent --show-error --output /dev/null --write-out '%{content_type}' "http://127.0.0.1:4242/a/$id/thumb")
+            [ "$type" = image/jpeg ] && exit 0
+            sleep 1
+          done
+          docker logs muninn-ci
+          exit 1

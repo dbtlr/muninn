@@ -14,9 +14,11 @@ const DEVICE_SCALE_FACTOR = 0.5;
 const JPEG_QUALITY = 80;
 
 // Where a Chromium may already be, when MUNINN_CHROMIUM_PATH is not set:
-// the Alpine `chromium` package (the Docker image), common Linux desktops,
-// and macOS. Any hit is fine; playwright-core drives it over CDP.
+// Debian's `chromium-headless-shell` package (the Docker image), the
+// `chromium` packages of Linux distributions, Chrome, and macOS. Any hit is
+// fine; playwright-core drives it over CDP.
 const CHROMIUM_CANDIDATES = [
+  '/usr/bin/chromium-headless-shell',
   '/usr/bin/chromium',
   '/usr/bin/chromium-browser',
   '/usr/bin/google-chrome',
