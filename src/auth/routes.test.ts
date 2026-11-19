@@ -322,7 +322,8 @@ describe('with an owner password', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toContain('no-store');
-    expect(res.headers.get('set-cookie')).toMatch(/Max-Age=0/u);
+    // A browser deletes a cookie only when the path matches the one it set.
+    expect(res.headers.get('set-cookie')).toMatch(/Max-Age=0; Path=\/keys(;|$)/u);
     const body = await res.text();
     const key = SHOWN_KEY.exec(body)?.[0];
     expect(key).toBeDefined();
