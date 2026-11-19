@@ -36,3 +36,33 @@ export async function closeQuietly(context: BrowserContext): Promise<void> {
     // Already closed; nothing to do.
   }
 }
+
+// Awaits `promise` only to mark its rejection handled.
+export async function ignoreFailure(promise: Promise<unknown>): Promise<void> {
+  try {
+    await promise;
+  } catch {
+    // Whoever awaits it next sees the failure.
+  }
+}
+
+// Settles as `promise` does, or rejects as soon as `signal` aborts.
+export async function untilAborted<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal === undefined) {
+    return promise;
+  }
+  signal.throwIfAborted();
+  const { promise: aborted, reject } = Promise.withResolvers<never>();
+  const onAbort = (): void => {
+    reject(signal.reason);
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
