@@ -100,6 +100,9 @@ jobs:
       # architecture, and that the container reaches healthy.
       - name: Render a thumbnail in the image
         run: |
+          set -o pipefail
+          # A failing command prints the container's log before the step fails.
+          trap 'docker logs muninn-ci' ERR
           docker run --detach --name muninn-ci --publish 127.0.0.1:4242:4242 muninn:ci
           for attempt in $(seq 1 60); do
             [ "$(docker inspect --format '{{.State.Health.Status}}' muninn-ci)" = healthy ] && break
