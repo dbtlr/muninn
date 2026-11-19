@@ -11,6 +11,9 @@
 
 FROM node:24-trixie-slim AS builder
 WORKDIR /app
+# apt runs without a terminal during the build; this keeps debconf from
+# trying interactive frontends. ARG does not reach the running container.
+ARG DEBIAN_FRONTEND=noninteractive
 # Vite+ builds its HTTP client from the system CA store, which Debian slim
 # leaves out, and panics without one.
 RUN apt-get update \
@@ -25,6 +28,7 @@ RUN pnpm run build
 
 FROM node:24-trixie-slim AS runner
 WORKDIR /app
+ARG DEBIAN_FRONTEND=noninteractive
 RUN corepack enable
 
 # Gallery previews are screenshots taken by a headless Chromium driven over
@@ -37,7 +41,9 @@ RUN corepack enable
 # name after the install. apt then reports their dependents as broken: do not
 # apt-get install into this image. `dpkg --remove` skips a package that is not
 # installed, so `dpkg --status` first fails the build if Debian renames one,
-# rather than shipping the drivers again.
+# and the `find` after it fails the build if LLVM or gallium files remain (a
+# renamed package behind a transitional one), rather than shipping the
+# drivers again.
 # Inter is the sans face (close to the macOS system font the pages are
 # designed on), DejaVu covers the mono and fallback glyphs, Noto the emoji.
 # Chromium resolves the CSS generic families through fontconfig, and without
@@ -51,6 +57,7 @@ RUN apt-get update \
     fonts-inter fonts-dejavu-core fonts-noto-color-emoji \
   && dpkg --status libgl1-mesa-dri mesa-libgallium libllvm19 libz3-4 > /dev/null \
   && dpkg --remove --force-depends libgl1-mesa-dri mesa-libgallium libllvm19 libz3-4 \
+  && test -z "$(find /usr/lib \( -name 'libLLVM*' -o -name 'libgallium*' \) -print -quit)" \
   && rm -rf /var/lib/apt/lists/* \
   && printf '%s\n' \
     '<?xml version="1.0"?>' \
