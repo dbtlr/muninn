@@ -343,16 +343,18 @@ pnpm exec wrangler secret put MUNINN_PUBLIC_BASE_URL
 
 - Create the `muninn` database once, before the first deploy: `pnpm worker:deploy` applies
   `migrations/` to it before it deploys the Worker. `--binding MUNINN_DB` makes Wrangler record
-  it on the existing binding rather than add a second one. The first deploy also creates the R2
-  bucket.
-- Wrangler writes the database and bucket IDs into `wrangler.jsonc`, which is a tracked file.
-  Commit that change on the branch you deploy from, and leave it out of pull requests to this
-  repository.
+  it on the existing binding rather than add a second one.
+- The first deploy creates the R2 bucket, `muninn-muninn-bucket`. Wrangler does not write its name
+  into `wrangler.jsonc`: later deploys keep the bucket that the deployed Worker is bound to.
+- `wrangler d1 create` writes the database ID into `wrangler.jsonc`, a tracked file, and reformats
+  the file. Commit that change on the branch you deploy from, and leave it out of pull requests to
+  this repository.
 - Set `MUNINN_PUBLIC_BASE_URL` to the Worker's URL, such as
   `https://muninn.<your-subdomain>.workers.dev`. Set it as a secret, not a variable:
   `wrangler deploy` replaces variables that `wrangler.jsonc` does not list, and it lists none.
 - Login limits count each client by the `CF-Connecting-IP` header that Cloudflare sets.
-  `MUNINN_CLIENT_ADDRESS_HEADER` is not read.
+  `MUNINN_CLIENT_ADDRESS_HEADER` is not read. Cloudflare refuses a request that already carries
+  the header (error 1000), so a client cannot choose the address it counts against.
 - A Cron Trigger removes expired one-time secrets every 10 minutes.
 - Gallery previews stay as placeholders. The Worker has no preview renderer yet.
 
