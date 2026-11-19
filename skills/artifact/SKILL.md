@@ -91,17 +91,18 @@ jq -n --rawfile content page.html \
   '{jsonrpc: "2.0", id: 1, method: "tools/call", params: {name: "add_artifact", arguments: {
      title: "Q3 Migration Plan", description: "Phases, owners, and open questions",
      project: "my-project", mediaType: "text/html", content: $content}}}' |
-curl -fsS "$MUNINN_MCP_URL" \
+curl -sS "$MUNINN_MCP_URL" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
-  ${MUNINN_API_KEY:+-H "Authorization: Bearer $MUNINN_API_KEY"} \
+  -H @<(printf '%s\n' "${MUNINN_API_KEY:+Authorization: Bearer $MUNINN_API_KEY}") \
   --data-binary @- |
-jq -r 'if .error then error(.error.message)
-       elif .result.isError then error(.result.content[0].text)
-       else .result.content[0].text | fromjson | .url end'
+jq -Rrs '. as $body | (try fromjson catch error($body)) |
+         if .error then error(.error.message)
+         elif .result.isError then error(.result.content[0].text)
+         else .result.content[0].text | fromjson | .url end'
 ```
 
-Set `MUNINN_MCP_URL` to the `/mcp` URL your MCP client uses. When the server requires a login, set `MUNINN_API_KEY` to the API key your client sends; without it the request fails with 401. Add `collection` to the arguments as Step 2 describes. The command prints the artifact's URL, or prints the error and exits non-zero. The 10 MiB artifact limit still applies.
+Set `MUNINN_MCP_URL` to the `/mcp` URL your MCP client uses. When the server requires a login, set `MUNINN_API_KEY` to the API key your client sends; without it the request fails with 401. Add `collection` to the arguments as Step 2 describes. The command prints the artifact's URL, or prints the server's error and exits non-zero. The key is read from a process substitution, so it never appears in the process list. The 10 MiB artifact limit still applies.
 
 ## Sending a Secret to the Owner
 
