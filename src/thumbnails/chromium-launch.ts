@@ -126,7 +126,7 @@ async function idsFromPs(pid: number): Promise<ProcessIds | undefined> {
   try {
     // Bounded: the lookup runs inside a launch, outside any render's
     // deadline, so a ps that stalls must not hold the queue. SIGKILL, since
-    // a stopped ps never acts on the default SIGTERM.
+    // on Linux a stopped ps never acts on the default SIGTERM.
     const { stdout } = await promisify(execFile)('ps', ['-o', 'ppid=,pgid=', '-p', String(pid)], {
       killSignal: 'SIGKILL',
       timeout: PS_TIMEOUT_MS,
