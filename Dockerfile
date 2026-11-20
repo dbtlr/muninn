@@ -44,6 +44,9 @@ RUN corepack enable
 # and the `find` after it fails the build if LLVM or gallium files remain (a
 # renamed package behind a transitional one), rather than shipping the
 # drivers again.
+# tini is the image's init (see ENTRYPOINT): it reaps the zombies a crashed
+# Chromium's children become once they are reparented away from it, which
+# node does not do, and it passes signals on to node.
 # Inter is the sans face (close to the macOS system font the pages are
 # designed on), DejaVu covers the mono and fallback glyphs, Noto the emoji.
 # Chromium resolves the CSS generic families through fontconfig, and without
@@ -53,7 +56,7 @@ RUN corepack enable
 # CSS ui-* names are not generics on Linux and fall through to these. The
 # file sorts before Debian's 60-latin.conf, so its preferences come first.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends chromium-headless-shell ca-certificates \
+  && apt-get install -y --no-install-recommends chromium-headless-shell ca-certificates tini \
     fonts-inter fonts-dejavu-core fonts-noto-color-emoji \
   && dpkg --status libgl1-mesa-dri mesa-libgallium libllvm19 libz3-4 > /dev/null \
   && dpkg --remove --force-depends libgl1-mesa-dri mesa-libgallium libllvm19 libz3-4 \
@@ -103,4 +106,7 @@ EXPOSE ${MUNINN_PORT}
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD ["node", "-e", "fetch(`http://localhost:${process.env.MUNINN_PORT}/`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 
+# -s registers tini as a subreaper, so it still reaps (and does not warn that
+# it cannot) when another init such as `docker run --init` is PID 1 above it.
+ENTRYPOINT ["/usr/bin/tini", "-s", "--"]
 CMD ["node", "dist/server.js"]

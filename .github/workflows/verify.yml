@@ -121,3 +121,32 @@ jobs:
           done
           docker logs muninn-ci
           exit 1
+      # The image's init (tini, see the Dockerfile) must reap Chromium's
+      # processes once they are killed: those whose parent died first are
+      # reparented to PID 1, and node never reaps them, so without an init
+      # they stay behind as zombies. The thumbnail above left Chromium
+      # running. The slim image has no ps, so the check reads /proc; a zombie
+      # still has its /proc entry, so "no chromium left" means all reaped.
+      - name: Reap a killed Chromium and stop cleanly
+        run: |
+          set -o pipefail
+          trap 'docker logs muninn-ci' ERR
+          docker exec muninn-ci sh -c '
+            set -e
+            test "$(cat /proc/1/comm)" = tini
+            chromium() { grep -ls "^Name:[[:space:]]*chromium" /proc/[0-9]*/status | sed "s|^/proc/||; s|/status\$||"; }
+            pids=$(chromium)
+            test -n "$pids"
+            # A process that exits on its own after the scan is fine: the
+            # loop below checks that every one is gone.
+            kill -KILL $pids 2>/dev/null || true
+            for attempt in $(seq 1 20); do
+              [ -z "$(chromium)" ] && exit 0
+              sleep 0.5
+            done
+            for pid in $(chromium); do grep -H "^State" "/proc/$pid/status"; done
+            exit 1
+          '
+          docker stop muninn-ci
+          docker logs muninn-ci | grep --line-regexp 'Muninn shutting down on SIGTERM' > /dev/null
+          test "$(docker inspect --format '{{.State.ExitCode}}' muninn-ci)" = 0

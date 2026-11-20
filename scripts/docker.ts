@@ -148,7 +148,6 @@ export function buildBareRunArgs(config: DockerConfig): string[] {
     '--detach',
     '--name',
     CONTAINER_NAME,
-    '--init',
     '--restart',
     'unless-stopped',
     '--publish',
