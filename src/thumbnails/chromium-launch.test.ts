@@ -1,3 +1,6 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+
 import type { Browser } from 'playwright-core';
 import { chromium } from 'playwright-core';
 import { describe, expect, it } from 'vite-plus/test';
@@ -11,7 +14,7 @@ import {
 import {
   BASE_CHROMIUM_ARGS,
   createBrowserSlot,
-  processGroupOf,
+  ownedProcessGroup,
   SIGNALS_LEFT_TO_SERVER,
   untilAborted,
 } from './chromium-launch.js';
@@ -58,10 +61,32 @@ async function draws(browser: Browser): Promise<void> {
   }
 }
 
-describe('processGroupOf', () => {
-  // Linux answers from /proc; macOS, which has no /proc, asks ps.
-  it("finds this process's group as ps reports it", async () => {
-    await expect(processGroupOf(process.pid)).resolves.toBe(await processGroupByPs(process.pid));
+// Linux answers from /proc; macOS, which has no /proc, asks ps. Process
+// groups and ps are POSIX only.
+describe.skipIf(process.platform === 'win32')('ownedProcessGroup', () => {
+  it('finds the group of a process this server started as a group leader', async () => {
+    // Started the way Playwright starts Chromium: detached, leading a group.
+    const child = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });
+    try {
+      const pid = child.pid ?? 0;
+
+      await expect(ownedProcessGroup(pid)).resolves.toBe(await processGroupByPs(pid));
+      await expect(processGroupByPs(pid)).resolves.toBe(pid);
+    } finally {
+      child.kill('SIGKILL');
+    }
+  });
+
+  it('refuses a group whose leader this server did not start', async () => {
+    // This process's own group is led by whatever started the test run.
+    await expect(ownedProcessGroup(process.pid)).resolves.toBeUndefined();
+  });
+
+  it('refuses a process that does not exist', async () => {
+    const child = spawn('true', [], { detached: true, stdio: 'ignore' });
+    await once(child, 'exit');
+
+    await expect(ownedProcessGroup(child.pid ?? 0)).resolves.toBeUndefined();
   });
 });
 

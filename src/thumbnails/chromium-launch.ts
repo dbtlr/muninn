@@ -54,7 +54,7 @@ const PROCESS_LOOKUP_TIMEOUT_MS = 30_000;
 // the close request, and Playwright then waits for it forever.
 const CLOSE_TIMEOUT_MS = 2000;
 
-// How long the ps fallback in processGroupOf may run before it is killed.
+// How long the ps fallback in processIds may run before it is killed.
 const PS_TIMEOUT_MS = 5000;
 
 // The shared Chromium behind one renderer: launched on first use, and
@@ -101,56 +101,76 @@ export async function browserProcessId(browser: Browser): Promise<number | undef
   }
 }
 
-// The process group `pid` belongs to. The browser's own id is not always
-// the group's: Debian's chromium-headless-shell, and any Chromium started by
-// a wrapper script, runs the browser under a parent that leads the group.
-// Read from /proc on Linux (the Docker image has no ps), from ps where there
-// is no /proc (macOS), and taken to be `pid` itself when neither answers.
-export async function processGroupOf(pid: number): Promise<number> {
-  const group = (await groupFromProc(pid)) ?? (await groupFromPs(pid));
-  return group ?? pid;
+type ProcessIds = { group: number; parent: number };
+
+// The parent and process group of `pid`, from /proc on Linux (the Docker
+// image has no ps) and from ps where there is no /proc (macOS); undefined
+// when neither answers or the process does not exist.
+async function processIds(pid: number): Promise<ProcessIds | undefined> {
+  return (await idsFromProc(pid)) ?? (await idsFromPs(pid));
 }
 
-async function groupFromProc(pid: number): Promise<number | undefined> {
+async function idsFromProc(pid: number): Promise<ProcessIds | undefined> {
   try {
     const stat = await readFile(`/proc/${String(pid)}/stat`, 'utf8');
     // The command name may hold spaces and parentheses; the fields after its
     // closing parenthesis are state, parent, then process group.
-    return positiveInteger(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2]);
+    const [, parent, group] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return processIdsFrom(parent, group);
   } catch {
     return undefined;
   }
 }
 
-async function groupFromPs(pid: number): Promise<number | undefined> {
+async function idsFromPs(pid: number): Promise<ProcessIds | undefined> {
   try {
     // Bounded: the lookup runs inside a launch, outside any render's
-    // deadline, so a ps that stalls must not hold the queue.
-    const { stdout } = await promisify(execFile)('ps', ['-o', 'pgid=', '-p', String(pid)], {
+    // deadline, so a ps that stalls must not hold the queue. SIGKILL, since
+    // a stopped ps never acts on the default SIGTERM.
+    const { stdout } = await promisify(execFile)('ps', ['-o', 'ppid=,pgid=', '-p', String(pid)], {
+      killSignal: 'SIGKILL',
       timeout: PS_TIMEOUT_MS,
     });
-    return positiveInteger(stdout.trim());
+    const [parent, group] = stdout.trim().split(/\s+/u);
+    return processIdsFrom(parent, group);
   } catch {
     return undefined;
   }
 }
 
-function positiveInteger(text: string | undefined): number | undefined {
-  const value = Number(text);
-  return Number.isInteger(value) && value > 0 ? value : undefined;
+function processIdsFrom(
+  parent: string | undefined,
+  group: string | undefined,
+): ProcessIds | undefined {
+  const ids = { group: Number(group), parent: Number(parent) };
+  return Number.isInteger(ids.group) && ids.group > 0 && Number.isInteger(ids.parent)
+    ? ids
+    : undefined;
 }
 
-// The browser's process group, or undefined when the lookup fails or finds
-// this server's own group (which a group kill would end too). The comparison
-// is only as good as processGroupOf: where neither /proc nor ps answers,
-// both groups fall back to process ids, and a shared group goes unnoticed.
-async function browserProcessGroup(browser: Browser): Promise<number | undefined> {
-  const pid = await browserProcessId(browser);
-  if (pid === undefined) {
+// The process group `pid` belongs to, but only when this server started the
+// group's leader: Playwright starts Chromium as a child of this process,
+// detached, as the leader of a new group. The browser's own id is not always
+// the group's: Debian's chromium-headless-shell, and any Chromium started by
+// a wrapper script, run the browser under a parent that leads the group.
+// Undefined for anything else (this server's own group, a process another
+// program started, a browser reached over a remote connection such as
+// SELENIUM_REMOTE_URL, whose process id names no local process of ours), so
+// a group kill can only reach processes this server started.
+export async function ownedProcessGroup(pid: number): Promise<number | undefined> {
+  const group = (await processIds(pid))?.group;
+  if (group === undefined || group <= 1) {
     return undefined;
   }
-  const [group, ownGroup] = await Promise.all([processGroupOf(pid), processGroupOf(process.pid)]);
-  return group > 1 && group !== ownGroup ? group : undefined;
+  const leader = await processIds(group);
+  return leader?.parent === process.pid ? group : undefined;
+}
+
+// The browser's process group, or undefined when the lookup fails or the
+// group is not one this server started (see ownedProcessGroup).
+async function browserProcessGroup(browser: Browser): Promise<number | undefined> {
+  const pid = await browserProcessId(browser);
+  return pid === undefined ? undefined : ownedProcessGroup(pid);
 }
 
 // SIGKILL to the whole group. A stopped browser never acts on a close request
