@@ -513,6 +513,11 @@ describe('SecretService storage', () => {
   });
 });
 
+// Filling every one of the 1,000 places takes 1 to 2 s on CI, and several
+// times that on a runner shared with the Chromium renderer suites; vitest's
+// 5 s default left too little headroom.
+const FILL_TIMEOUT_MS = 20_000;
+
 describe('SecretService limits', () => {
   const valid = { content, label: 'Valid' };
 
@@ -613,49 +618,57 @@ describe('SecretService limits', () => {
     expect(expiresAt).toBe(inSeconds(ttl));
   });
 
-  it('refuses secrets and upload slots past the limit until one is read', async () => {
-    const { id, key } = await service.create(valid);
-    const { uploadToken } = await service.createUpload({ label: 'Held' });
-    await Promise.all(
-      Array.from({ length: 998 }, (_slot, index) =>
-        service.createUpload({ label: `Slot ${String(index)}` }),
-      ),
-    );
+  it(
+    'refuses secrets and upload slots past the limit until one is read',
+    async () => {
+      const { id, key } = await service.create(valid);
+      const { uploadToken } = await service.createUpload({ label: 'Held' });
+      await Promise.all(
+        Array.from({ length: 998 }, (_slot, index) =>
+          service.createUpload({ label: `Slot ${String(index)}` }),
+        ),
+      );
 
-    await expect(service.create(valid)).rejects.toThrow(SecretLimitError);
-    await expect(service.createUpload({ label: 'Over' })).rejects.toThrow(SecretLimitError);
-    // A slot already holds its place, so its upload still succeeds.
-    await expect(service.upload(uploadToken, content)).resolves.not.toBeNull();
+      await expect(service.create(valid)).rejects.toThrow(SecretLimitError);
+      await expect(service.createUpload({ label: 'Over' })).rejects.toThrow(SecretLimitError);
+      // A slot already holds its place, so its upload still succeeds.
+      await expect(service.upload(uploadToken, content)).resolves.not.toBeNull();
 
-    await service.reveal(id, key);
-    await expect(service.create(valid)).resolves.toMatchObject({ id: expect.any(String) });
-  });
+      await service.reveal(id, key);
+      await expect(service.create(valid)).resolves.toMatchObject({ id: expect.any(String) });
+    },
+    FILL_TIMEOUT_MS,
+  );
 
-  it("holds a used upload slot's place until its secret is stored", async () => {
-    const { uploadToken } = await service.createUpload({ label: 'Held' });
-    await Promise.all(
-      Array.from({ length: 999 }, (_slot, index) =>
-        service.createUpload({ label: `Slot ${String(index)}` }),
-      ),
-    );
-    let raced: unknown;
-    const racing = createSecretService({
-      now: () => clock,
-      store: storeWith({
-        takeUploadSlot: async (...args) => {
-          const slot = await store.takeUploadSlot(...args);
-          raced = await service.create(valid).catch((error: unknown) => error);
-          return slot;
-        },
-      }),
-    });
+  it(
+    "holds a used upload slot's place until its secret is stored",
+    async () => {
+      const { uploadToken } = await service.createUpload({ label: 'Held' });
+      await Promise.all(
+        Array.from({ length: 999 }, (_slot, index) =>
+          service.createUpload({ label: `Slot ${String(index)}` }),
+        ),
+      );
+      let raced: unknown;
+      const racing = createSecretService({
+        now: () => clock,
+        store: storeWith({
+          takeUploadSlot: async (...args) => {
+            const slot = await store.takeUploadSlot(...args);
+            raced = await service.create(valid).catch((error: unknown) => error);
+            return slot;
+          },
+        }),
+      });
 
-    await expect(racing.upload(uploadToken, content)).resolves.not.toBeNull();
+      await expect(racing.upload(uploadToken, content)).resolves.not.toBeNull();
 
-    expect(raced).toBeInstanceOf(SecretLimitError);
-    expect(liveCount()).toBe(1000);
-    expect(rows('secrets')).toHaveLength(1);
-  });
+      expect(raced).toBeInstanceOf(SecretLimitError);
+      expect(liveCount()).toBe(1000);
+      expect(rows('secrets')).toHaveLength(1);
+    },
+    FILL_TIMEOUT_MS,
+  );
 
   // The slot is taken 1 ms before it expires, and the sweep then removes it
   // while its upload is still in flight.

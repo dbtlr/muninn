@@ -13,8 +13,10 @@ import {
   BASE_CHROMIUM_ARGS,
   closeQuietly,
   closeWhenCreated,
+  createBrowserSlot,
   DEAD_PROXY,
   ignoreFailure,
+  LAUNCH_TIMEOUT_MS,
   SIGNALS_LEFT_TO_SERVER,
   untilAborted,
 } from './chromium-launch.js';
@@ -92,6 +94,7 @@ export function mermaidLaunchOptions(executablePath: string | undefined): Launch
     // and nothing else bypasses: every address goes to the dead proxy,
     // including this server's own.
     proxy: { bypass: '<-loopback>', server: DEAD_PROXY },
+    timeout: LAUNCH_TIMEOUT_MS,
     ...(executablePath === undefined ? {} : { executablePath }),
     ...SIGNALS_LEFT_TO_SERVER,
   };
@@ -167,25 +170,36 @@ function describe(error: unknown): string {
 }
 
 // One headless Chromium for Mermaid alone, launched on first use and
-// relaunched after a crash. It never shares a process with an artifact page:
-// the artifact browser disables scripts for its whole life, and this one
-// never loads anything an artifact supplies except diagram text as data.
+// replaced after a crash or once it stops answering (see createBrowserSlot).
+// It never shares a process with an artifact page: the artifact browser
+// disables scripts for its whole life, and this one never loads anything an
+// artifact supplies except diagram text as data. A first launch that fails
+// disables Mermaid rendering; a relaunch that fails after a browser has run
+// is reported and draws nothing for that render only.
 export function createMermaidRenderer({
   executablePath,
   report = defaultReport,
   scriptPath,
 }: MermaidRendererOptions): MermaidRenderer {
   let bundle: Promise<string> | undefined;
-  let browser: Promise<Browser> | undefined;
   let disabled = false;
-
-  async function launch(): Promise<Browser> {
-    const launched = await chromium.launch(mermaidLaunchOptions(executablePath));
-    launched.on('disconnected', () => {
-      browser = undefined;
-    });
-    return launched;
-  }
+  let launchedOnce = false;
+  // Launch failures are reported here, where the launch runs, so one is
+  // reported even when every render that waited for it has given up.
+  const slot = createBrowserSlot(async () => {
+    try {
+      const launched = await chromium.launch(mermaidLaunchOptions(executablePath));
+      launchedOnce = true;
+      return launched;
+    } catch (error) {
+      if (launchedOnce) {
+        report(`Mermaid diagrams left as source, Chromium failed to relaunch: ${describe(error)}`);
+      } else {
+        disable(describe(error));
+      }
+      throw error;
+    }
+  });
 
   function disable(reason: string): void {
     if (!disabled) {
@@ -195,8 +209,9 @@ export function createMermaidRenderer({
   }
 
   // The bundle and the browser, or null once either is known to be missing
-  // or unusable. A launch still in progress when the signal aborts goes on
-  // in the background, and the next render uses it.
+  // or unusable, or when a relaunch fails (the next render launches again).
+  // A launch still in progress when the signal aborts goes on in the
+  // background, and the next render uses it.
   async function ready(
     signal: AbortSignal | undefined,
   ): Promise<{ browser: Browser; script: string } | null> {
@@ -215,11 +230,11 @@ export function createMermaidRenderer({
       disable(`the bundle ${scriptPath} is empty`);
       return null;
     }
-    const launching = (browser ??= launch());
+    const launching = slot.acquire();
     // A render that gives up on this launch (its signal aborted) leaves the
     // launch running for the next render; if it then fails with nobody
     // awaiting it, that must not become an unhandled rejection, which stops
-    // the server. The next render awaits it and reports the failure.
+    // the server. The launch callback above has reported the failure.
     void ignoreFailure(launching);
     try {
       return { browser: await untilAborted(launching, signal), script };
@@ -227,8 +242,6 @@ export function createMermaidRenderer({
       if (signal?.aborted === true) {
         throw error;
       }
-      browser = undefined;
-      disable(describe(error));
       return null;
     }
   }
@@ -256,9 +269,12 @@ export function createMermaidRenderer({
     }
     const drawing = drawAndClose();
     try {
-      return await untilAborted(drawing, signal);
+      const drawn = await untilAborted(drawing, signal);
+      slot.rendered(launched);
+      return drawn;
     } catch (error) {
       if (signal?.aborted === true) {
+        slot.missed(launched);
         void ignoreFailure(drawing);
         void closeWhenCreated(opening);
       }
@@ -267,13 +283,7 @@ export function createMermaidRenderer({
   }
 
   return {
-    close: async () => {
-      const current = browser;
-      browser = undefined;
-      // A launch that failed was already reported; there is nothing to close.
-      const launched = await current?.catch(() => undefined);
-      await launched?.close();
-    },
+    close: async () => slot.close(),
     render: async (texts, signal) => {
       const resources = await ready(signal);
       if (resources === null) {
