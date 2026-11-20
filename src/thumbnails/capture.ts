@@ -306,8 +306,10 @@ export async function captureThumbnail(
       void closeWhenCreated(creating);
     } else if (context !== undefined) {
       // The render failed, often because the browser went away, and then
-      // closing its context fails too. That second failure would hide why.
-      await closeQuietly(context);
+      // closing its context fails too. That second failure would hide why,
+      // and with the deadline cleared, a close that never settles would hold
+      // the failure back, so the close is not awaited.
+      void closeQuietly(context);
     }
     throw error;
   }
@@ -315,9 +317,10 @@ export async function captureThumbnail(
   try {
     hooks.rendered();
   } catch (error) {
-    // The hook's failure is the one to report, not a failed close after it.
+    // The hook's failure is the one to report, not a failed or stuck close
+    // after it.
     if (context !== undefined) {
-      await closeQuietly(context);
+      void closeQuietly(context);
     }
     throw error;
   }

@@ -10,13 +10,25 @@ const TARGET: ThumbnailTarget = {
   url: 'https://render.example/a/a1',
 };
 
+// How a context's close() behaves: settles, rejects, or never settles.
+type CloseBehaviour = 'closes' | 'fails' | 'hangs';
+
 // A browser that draws every page, and how many of its contexts were closed.
-function drawingBrowser(): { browser: Browser; contextCloses: () => number } {
+function drawingBrowser(closing: CloseBehaviour = 'closes'): {
+  browser: Browser;
+  contextCloses: () => number;
+} {
   let closes = 0;
   const browser = {
     newContext: async () => ({
       close: async () => {
         closes += 1;
+        if (closing === 'fails') {
+          throw new Error('browserContext.close: Target closed');
+        }
+        if (closing === 'hangs') {
+          await Promise.withResolvers<void>().promise;
+        }
       },
       newPage: async () => {
         const listeners: ((response: unknown) => void)[] = [];
@@ -43,7 +55,44 @@ function drawingBrowser(): { browser: Browser; contextCloses: () => number } {
   };
 }
 
+const throwingHooks = {
+  missed: vi.fn(),
+  rendered: () => {
+    throw new Error('rendered hook failed');
+  },
+};
+
 describe('captureThumbnail', () => {
+  it("closes the render's context after a render that finishes", async () => {
+    const { browser, contextCloses } = drawingBrowser();
+
+    await captureThumbnail(
+      browser,
+      TARGET,
+      { report: () => {}, timeoutMs: 1000 },
+      { missed: vi.fn(), rendered: () => {} },
+    );
+
+    expect(contextCloses()).toBe(1);
+  });
+
+  it("reports the rendered hook's failure when closing the context fails too", async () => {
+    const { browser } = drawingBrowser('fails');
+
+    await expect(
+      captureThumbnail(browser, TARGET, { report: () => {}, timeoutMs: 1000 }, throwingHooks),
+    ).rejects.toThrow('rendered hook failed');
+  });
+
+  it("reports the rendered hook's failure without waiting for a close that never settles", async () => {
+    const { browser, contextCloses } = drawingBrowser('hangs');
+
+    await expect(
+      captureThumbnail(browser, TARGET, { report: () => {}, timeoutMs: 1000 }, throwingHooks),
+    ).rejects.toThrow('rendered hook failed');
+    expect(contextCloses()).toBe(1);
+  });
+
   it("closes the render's context even when the runtime's rendered hook throws", async () => {
     const { browser, contextCloses } = drawingBrowser();
 
