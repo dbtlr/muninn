@@ -44,9 +44,9 @@ RUN corepack enable
 # and the `find` after it fails the build if LLVM or gallium files remain (a
 # renamed package behind a transitional one), rather than shipping the
 # drivers again.
-# tini runs as PID 1 (see ENTRYPOINT): it reaps the zombies a crashed
-# Chromium's children become once they are reparented to PID 1, which node
-# does not do, and it passes signals on to node.
+# tini is the image's init (see ENTRYPOINT): it reaps the zombies a crashed
+# Chromium's children become once they are reparented away from it, which
+# node does not do, and it passes signals on to node.
 # Inter is the sans face (close to the macOS system font the pages are
 # designed on), DejaVu covers the mono and fallback glyphs, Noto the emoji.
 # Chromium resolves the CSS generic families through fontconfig, and without
