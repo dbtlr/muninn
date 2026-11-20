@@ -19,8 +19,13 @@ import type { ThumbnailTarget } from './types.js';
 const PUBLIC_BASE_URL = 'https://muninn.example.workers.dev';
 const JPEG = Uint8Array.of(255, 216, 255, 224);
 
-// Playwright's message for a call on a browser whose connection has closed.
+// Playwright's message for a call on a page, context, or browser that has
+// closed.
 const TARGET_CLOSED = 'Target page, context or browser has been closed';
+
+// How long after a lost session's page load fails Playwright emits
+// `disconnected`: about 200 ms against a real browser sent CDP Browser.close.
+const DISCONNECT_LAG_MS = 200;
 
 const HTML_TARGET: ThumbnailTarget = {
   id: 'a1',
@@ -44,11 +49,14 @@ type FakeRoute = {
 // - disconnects: the connection drops (Playwright emits `disconnected`) as
 //   the render creates its context, which then fails with a transport error.
 // - loses its target: the remote browser receives CDP Browser.close during
-//   the page load, as the real one did in testing. The load fails with
-//   Playwright's target-closed error, closing the context fails with a
-//   protocol error, and `disconnected` comes a tick later.
+//   the page load, as a real one did in testing. The load fails with
+//   net::ERR_ABORTED, closing the context fails with a protocol error, and
+//   `disconnected` comes DISCONNECT_LAG_MS after the load fails.
+// - closes its page: the page load fails with Playwright's target-closed
+//   error because the page closed, while the browser stays connected.
 // - fails: the screenshot fails while the browser stays connected.
 type Behaviour =
+  | 'closes its page'
   | 'disconnects'
   | 'draws'
   | 'fails'
@@ -162,7 +170,10 @@ function fakeConnection(
               }
               if (behaviour === 'loses its target') {
                 endSession();
-                setTimeout(drop, 0);
+                setTimeout(drop, DISCONNECT_LAG_MS);
+                throw new Error(`page.goto: net::ERR_ABORTED at ${url}`);
+              }
+              if (behaviour === 'closes its page') {
                 throw new Error(`page.goto: ${TARGET_CLOSED}`);
               }
               for (const listener of listeners) {
@@ -435,6 +446,26 @@ describe('createBrowserRenderingRenderer', () => {
 
     expect(error).toBeInstanceOf(RenderUnavailableError);
     // The render's own failure, not the context close that failed after it.
+    expect(error).toHaveProperty('message', expect.stringContaining('net::ERR_ABORTED'));
+  });
+
+  it('rejects with a plain error when a page closes while the browser stays connected', async () => {
+    vi.useFakeTimers();
+    const { api, sessionNamed } = fakeBrowserRendering();
+    const closing = renderer(api);
+    await closing.render(HTML_TARGET);
+    sessionNamed('launched-1').behaviour = 'closes its page';
+
+    const rendering = closing.render(HTML_TARGET);
+    const failure = rejectionOf(rendering);
+    const settled = settledFlag(rendering);
+    // It waits a second for the session to report itself lost, no longer.
+    await vi.advanceTimersByTimeAsync(999);
+    expect(settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const error = await failure;
+    expect(error).not.toBeInstanceOf(RenderUnavailableError);
     expect(error).toHaveProperty('message', expect.stringContaining(TARGET_CLOSED));
   });
 

@@ -47,6 +47,11 @@ import type { ThumbnailRenderer, ThumbnailTarget } from './types.js';
 // RenderUnavailableError, so the caller can retry later. A render that fails
 // otherwise, including one that passes its deadline, rejects with a plain
 // error; resolving null still means the artifact has no preview to render.
+// A session counts as lost only when Playwright emits `disconnected` for it,
+// never by an error's message. When a render fails some other way and the
+// session is lost too, the loss wins: the session's state is unknown, a
+// retry reconnects or launches, and an error the artifact causes every time
+// then comes back plain, so retries stay bounded.
 //
 // Known limits:
 // - A launch acquires its session first, then opens its WebSocket and CDP
@@ -70,11 +75,14 @@ const ACQUIRE_TIMEOUT_MS = 10_000;
 // Browser.close before it drops the connection regardless.
 const END_SESSION_TIMEOUT_MS = 2000;
 
-// Playwright's message for a call on a page, context, or browser whose
-// connection has closed (its TargetClosedError). Matched by message: the
-// client-side class is not exported and keeps the name `Error`, and the
-// Worker bundle takes nothing from Playwright at run time.
-const TARGET_CLOSED = /Target page, context or browser has been closed|Target closed/u;
+// How long a render that failed waits for its browser to report the
+// session lost before it takes the failure for the render's own. A remote
+// browser that ends mid-render fails the page load (often as a plain
+// net::ERR_ABORTED) before Playwright emits `disconnected`; against a real
+// browser that came about 200 ms later. An error's message cannot tell the
+// two apart: a page or context that closes while the browser stays
+// connected fails with the same target-closed message as a lost session.
+const LOSS_GRACE_MS = 1000;
 
 // A Browser Rendering browser. @cloudflare/playwright is a fork of
 // Playwright, but its Browser type sits behind extensionless relative
@@ -122,9 +130,9 @@ export class RenderUnavailableError extends Error {
   }
 }
 
-// An open connection to a session, and whether Playwright has reported it
-// disconnected since.
-type Connection = { browser: RenderingBrowser; lost: boolean };
+// An open connection to a session, and a promise that resolves once
+// Playwright reports it disconnected.
+type Connection = { browser: RenderingBrowser; disconnected: Promise<void> };
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -138,6 +146,23 @@ async function within<T>(work: Promise<T>, ms: number, message: string): Promise
   }, ms);
   try {
     return await untilAborted(work, expiry.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Whether `connection` reports itself disconnected within `ms`.
+async function disconnectsWithin(connection: Connection, ms: number): Promise<boolean> {
+  const { promise: expired, resolve } = Promise.withResolvers<boolean>();
+  const timer = setTimeout(() => {
+    resolve(false);
+  }, ms);
+  const disconnecting = (async () => {
+    await connection.disconnected;
+    return true;
+  })();
+  try {
+    return await Promise.race([disconnecting, expired]);
   } finally {
     clearTimeout(timer);
   }
@@ -224,11 +249,11 @@ export function createBrowserRenderingRenderer({
     const remembered = session.id;
     const browser =
       (remembered === undefined ? undefined : await reconnect(remembered)) ?? (await launch());
-    const connection: Connection = { browser, lost: false };
+    const { promise: disconnected, resolve } = Promise.withResolvers<void>();
     browser.on('disconnected', () => {
-      connection.lost = true;
+      resolve();
     });
-    return connection;
+    return { browser, disconnected };
   }
 
   // The open connection, opening one if there is none, with the promise it
@@ -308,8 +333,9 @@ export function createBrowserRenderingRenderer({
     } catch (error) {
       // A passed deadline is the render's own failure, even when retiring
       // the session, or a drop while it waited, has closed the browser since.
-      const lost = connection.lost || TARGET_CLOSED.test(describe(error));
-      if (missedDeadline || !lost) {
+      // Any other failure counts as a lost session when the browser reports
+      // itself disconnected, now or within LOSS_GRACE_MS.
+      if (missedDeadline || !(await disconnectsWithin(connection, LOSS_GRACE_MS))) {
         throw error;
       }
       forget(pending);
