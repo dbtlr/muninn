@@ -111,6 +111,7 @@ describe('createMermaidRenderer without a bundle', () => {
       unhandled.push(reason);
     };
     process.on('unhandledRejection', onUnhandled);
+    const launches = vi.spyOn(chromium, 'launch');
     const reported: string[] = [];
     const mermaid = createMermaidRenderer({
       executablePath: '/nonexistent/chromium',
@@ -127,10 +128,15 @@ describe('createMermaidRenderer without a bundle', () => {
       );
       await delay(500);
 
+      // The failure is reported by the launch itself, though no render was
+      // waiting for it, and the next render tries no second launch.
       expect(unhandled).toEqual([]);
-      await expect(mermaid.render(['graph TD; A-->B'])).resolves.toEqual([null]);
       expect(reported).toEqual([expect.stringMatching(/^Mermaid thumbnails disabled, /u)]);
+      await expect(mermaid.render(['graph TD; A-->B'])).resolves.toEqual([null]);
+      expect(launches).toHaveBeenCalledTimes(1);
+      expect(reported).toHaveLength(1);
     } finally {
+      launches.mockRestore();
       process.off('unhandledRejection', onUnhandled);
       await mermaid.close();
     }
