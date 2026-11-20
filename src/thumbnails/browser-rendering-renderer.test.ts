@@ -303,8 +303,7 @@ function settledFlag(promise: Promise<unknown>): () => boolean {
   return () => settled;
 }
 
-// A render that passes its 50 ms deadline is retired only on the third miss
-// in a row; this many renders stay under that.
+// A deadline short enough for tests whose renders hang.
 const DEADLINE_MS = 50;
 
 afterEach(() => {
@@ -521,6 +520,22 @@ describe('createBrowserRenderingRenderer', () => {
     expect(memory.id).toBe('launched-1');
     expect(launched.ended).toBe(false);
     expect(api.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts the miss count of a newly launched session at zero', async () => {
+    const { api, launchSession, sessionNamed } = fakeBrowserRendering();
+    const memory: SessionMemory = { id: 'expired', misses: 2 };
+    api.launch.mockImplementationOnce(async () => {
+      const launched = launchSession();
+      sessionNamed('launched-1').behaviour = 'hangs';
+      return launched;
+    });
+
+    await expect(renderer(api, memory, DEADLINE_MS).render(HTML_TARGET)).rejects.toThrow(
+      /deadline/u,
+    );
+
+    expect(memory).toEqual({ id: 'launched-1', misses: 1 });
   });
 
   it('retires a session it no longer remembers without forgetting the one it does', async () => {
