@@ -54,6 +54,9 @@ const PROCESS_LOOKUP_TIMEOUT_MS = 30_000;
 // the close request, and Playwright then waits for it forever.
 const CLOSE_TIMEOUT_MS = 2000;
 
+// How long the ps fallback in processGroupOf may run before it is killed.
+const PS_TIMEOUT_MS = 5000;
+
 // The shared Chromium behind one renderer: launched on first use, and
 // replaced after a crash or once it stops answering. When the launch found
 // the browser's process group (see PROCESS_LOOKUP_TIMEOUT_MS), retiring or
@@ -121,7 +124,11 @@ async function groupFromProc(pid: number): Promise<number | undefined> {
 
 async function groupFromPs(pid: number): Promise<number | undefined> {
   try {
-    const { stdout } = await promisify(execFile)('ps', ['-o', 'pgid=', '-p', String(pid)]);
+    // Bounded: the lookup runs inside a launch, outside any render's
+    // deadline, so a ps that stalls must not hold the queue.
+    const { stdout } = await promisify(execFile)('ps', ['-o', 'pgid=', '-p', String(pid)], {
+      timeout: PS_TIMEOUT_MS,
+    });
     return positiveInteger(stdout.trim());
   } catch {
     return undefined;
@@ -209,7 +216,8 @@ export function createBrowserSlot(
     });
     if (token === generation) {
       settled = entry;
-      // Died during the launch: this render fails, the next one launches anew.
+      // Died during the launch: every render already waiting on this launch
+      // gets the dead browser and fails; the next acquire launches anew.
       if (!browser.isConnected()) {
         end(entry);
       }

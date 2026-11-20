@@ -351,8 +351,10 @@ export function createPlaywrightRenderer({
     // Either would hold the queue for good. On the deadline the render rejects
     // at once and closes the context in the background, whenever it exists;
     // the abort also ends the Mermaid step (see mermaid-renderer.ts). A
-    // deadline passed in that step counts against the Mermaid browser, which
-    // the Mermaid renderer reports itself, not against this one.
+    // deadline passed in that step never counts against this browser: the
+    // Mermaid renderer counts it against its own browser when one was
+    // drawing, and against neither while the Mermaid browser is still
+    // launching (a slow launch is not a stuck browser).
     const deadlineReached = new AbortController();
     const deadline = setTimeout(() => {
       deadlineReached.abort(
