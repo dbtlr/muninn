@@ -9,7 +9,7 @@
 # WORKDIR and the COPY layout below such that dist/server.js ends up at
 # <WORKDIR>/dist/server.js and dist/public/ stays alongside it.
 
-FROM node:24-trixie-slim AS builder
+FROM node:26-trixie-slim AS builder
 WORKDIR /app
 # apt runs without a terminal during the build; this keeps debconf from
 # trying interactive frontends. ARG does not reach the running container.
@@ -26,7 +26,7 @@ COPY tsconfig.json vite.config.ts ./
 COPY src ./src
 RUN pnpm run build
 
-FROM node:24-trixie-slim AS runner
+FROM node:26-trixie-slim AS runner
 WORKDIR /app
 ARG DEBIAN_FRONTEND=noninteractive
 RUN corepack enable
