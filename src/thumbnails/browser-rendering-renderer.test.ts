@@ -405,19 +405,47 @@ describe('createBrowserRenderingRenderer', () => {
     await expect(refused.render(HTML_TARGET)).resolves.toEqual(JPEG);
   });
 
-  it('rejects with RenderUnavailableError when the connection dropped between renders', async () => {
+  it('reconnects in the same render when the connection dropped between renders', async () => {
     const { api, connectionAt } = fakeBrowserRendering();
     const dropping = renderer(api);
     await dropping.render(HTML_TARGET);
     connectionAt(0).drop();
 
-    const error = await rejectionOf(dropping.render(HTML_TARGET));
-
-    expect(error).toBeInstanceOf(RenderUnavailableError);
-    expect(error).toHaveProperty('message', expect.stringMatching(/between renders/u));
-    // The dropped connection is let go: the next render reconnects.
     await expect(dropping.render(HTML_TARGET)).resolves.toEqual(JPEG);
+
+    expect(api.connect).toHaveBeenCalledTimes(1);
     expect(api.connect).toHaveBeenCalledWith(BINDING, 'launched-1');
+    expect(api.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('launches in the same render when the session ended between renders', async () => {
+    const { api, connectionAt, sessionNamed } = fakeBrowserRendering();
+    const memory = emptyMemory();
+    const dropping = renderer(api, memory);
+    await dropping.render(HTML_TARGET);
+    // Its keep-alive ran out.
+    sessionNamed('launched-1').ended = true;
+    connectionAt(0).drop();
+
+    await expect(dropping.render(HTML_TARGET)).resolves.toEqual(JPEG);
+
+    expect(api.launch).toHaveBeenCalledTimes(2);
+    expect(memory.id).toBe('launched-2');
+  });
+
+  it('rejects with RenderUnavailableError when a dropped connection cannot be replaced', async () => {
+    const { api, connectionAt, sessionNamed } = fakeBrowserRendering();
+    const dropping = renderer(api);
+    await dropping.render(HTML_TARGET);
+    sessionNamed('launched-1').ended = true;
+    connectionAt(0).drop();
+    api.launch.mockRejectedValueOnce(
+      new Error('Unable to create new browser: code: 429: message: Too many requests'),
+    );
+
+    await expect(rejectionOf(dropping.render(HTML_TARGET))).resolves.toBeInstanceOf(
+      RenderUnavailableError,
+    );
   });
 
   it('rejects with RenderUnavailableError when the connection drops during a render', async () => {

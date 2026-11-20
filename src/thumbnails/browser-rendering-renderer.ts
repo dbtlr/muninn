@@ -257,22 +257,27 @@ export function createBrowserRenderingRenderer({
   }
 
   // The open connection, opening one if there is none, with the promise it
-  // came from. A connection that has dropped since the last render counts as
-  // a lost session.
-  async function acquire(): Promise<{ connection: Connection; pending: Promise<Connection> }> {
+  // came from.
+  async function connected(): Promise<{ connection: Connection; pending: Promise<Connection> }> {
     const pending = (opening ??= open());
-    let connection: Connection;
     try {
-      connection = await pending;
+      return { connection: await pending, pending };
     } catch (error) {
       forget(pending);
       throw error;
     }
-    if (!connection.browser.isConnected()) {
-      forget(pending);
-      throw new RenderUnavailableError('Browser Rendering session lost between renders');
+  }
+
+  // As connected(), but a connection that has dropped since the last render
+  // is let go and opened again: the remembered session reconnected, or a
+  // new one launched.
+  async function acquire(): Promise<{ connection: Connection; pending: Promise<Connection> }> {
+    const cached = await connected();
+    if (cached.connection.browser.isConnected()) {
+      return cached;
     }
-    return { connection, pending };
+    forget(cached.pending);
+    return connected();
   }
 
   function forget(pending: Promise<Connection>): void {
