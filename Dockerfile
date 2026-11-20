@@ -106,5 +106,7 @@ EXPOSE ${MUNINN_PORT}
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD ["node", "-e", "fetch(`http://localhost:${process.env.MUNINN_PORT}/`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# -s registers tini as a subreaper, so it still reaps (and does not warn that
+# it cannot) when another init such as `docker run --init` is PID 1 above it.
+ENTRYPOINT ["/usr/bin/tini", "-s", "--"]
 CMD ["node", "dist/server.js"]

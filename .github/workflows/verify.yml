@@ -137,7 +137,9 @@ jobs:
             chromium() { grep -ls "^Name:[[:space:]]*chromium" /proc/[0-9]*/status | sed "s|^/proc/||; s|/status\$||"; }
             pids=$(chromium)
             test -n "$pids"
-            kill -KILL $pids
+            # A process that exits on its own after the scan is fine: the
+            # loop below checks that every one is gone.
+            kill -KILL $pids 2>/dev/null || true
             for attempt in $(seq 1 20); do
               [ -z "$(chromium)" ] && exit 0
               sleep 0.5
@@ -146,5 +148,5 @@ jobs:
             exit 1
           '
           docker stop muninn-ci
-          docker logs muninn-ci | grep --quiet --line-regexp 'Muninn shutting down on SIGTERM'
+          docker logs muninn-ci | grep --line-regexp 'Muninn shutting down on SIGTERM' > /dev/null
           test "$(docker inspect --format '{{.State.ExitCode}}' muninn-ci)" = 0
