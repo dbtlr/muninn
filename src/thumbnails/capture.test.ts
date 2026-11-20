@@ -13,8 +13,12 @@ const TARGET: ThumbnailTarget = {
 // How a context's close() behaves: settles, rejects, or never settles.
 type CloseBehaviour = 'closes' | 'fails' | 'hangs';
 
-// A browser that draws every page, and how many of its contexts were closed.
-function drawingBrowser(closing: CloseBehaviour = 'closes'): {
+// A browser that draws every page, or fails every navigation, and how many
+// of its contexts were closed.
+function drawingBrowser(
+  closing: CloseBehaviour = 'closes',
+  { navigation }: { navigation: 'fails' | 'loads' } = { navigation: 'loads' },
+): {
   browser: Browser;
   contextCloses: () => number;
 } {
@@ -34,6 +38,9 @@ function drawingBrowser(closing: CloseBehaviour = 'closes'): {
         const listeners: ((response: unknown) => void)[] = [];
         return {
           goto: async (url: string) => {
+            if (navigation === 'fails') {
+              throw new Error('page.goto: net::ERR_CONNECTION_REFUSED');
+            }
             for (const listener of listeners) {
               listener({ ok: () => true, url: () => new URL(url).href });
             }
@@ -75,6 +82,20 @@ describe('captureThumbnail', () => {
 
     expect(contextCloses()).toBe(1);
   });
+
+  it.each<CloseBehaviour>(['closes', 'fails', 'hangs'])(
+    "reports a failed render's own error and closes its context when the close %s",
+    async (closing) => {
+      const { browser, contextCloses } = drawingBrowser(closing, { navigation: 'fails' });
+      const hooks = { missed: vi.fn(), rendered: vi.fn() };
+
+      await expect(
+        captureThumbnail(browser, TARGET, { report: () => {}, timeoutMs: 1000 }, hooks),
+      ).rejects.toThrow('net::ERR_CONNECTION_REFUSED');
+      expect(contextCloses()).toBe(1);
+      expect(hooks.missed).not.toHaveBeenCalled();
+    },
+  );
 
   it("reports the rendered hook's failure when closing the context fails too", async () => {
     const { browser } = drawingBrowser('fails');
