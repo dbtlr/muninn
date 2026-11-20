@@ -109,10 +109,14 @@ network.
   connection. The renderer reuses only a session it launched itself: the account's session list
   may hold a session that another Worker launched without guardrails. As on Node, three renders in
   a row that pass their deadline retire the session, which the renderer then ends over CDP. A
-  refused launch, a launch or reconnect that takes longer than 10 seconds, or a lost session
-  rejects with `RenderUnavailableError`, so the caller can retry later. Any other failure,
-  including a render that passes its deadline, rejects with a plain error. A render that resolves
-  `null` still means the artifact has no preview.
+  reconnect that fails or takes longer than 10 seconds falls through to a launch, as does a
+  connection found dropped before a render. A refused launch, a launch that takes longer than 10
+  seconds, or a session lost during a render rejects with `RenderUnavailableError`, so the caller
+  can retry later. A session counts as lost only when Playwright reports it disconnected, never by
+  an error's message; when a render fails and its session is lost too, the loss wins, since a
+  retry reconnects or launches and an error the artifact itself causes then comes back plain. Any
+  other failure, including a render that passes its deadline, rejects with a plain error. A render
+  that resolves `null` still means the artifact has no preview.
 - A Worker request that signs or checks a URL reads the hour's signing key from D1, rather than
   from a process cache that lasts the hour as [ADR-0004](0004-hourly-url-signing-keys.md) describes
   for Node.

@@ -42,8 +42,10 @@ import type { ThumbnailRenderer, ThumbnailTarget } from './types.js';
 // the isolate shares. Only a session this renderer launched is ever reused,
 // by the ID it remembers; a session from the account's list of sessions may
 // belong to another Worker that launched it without guardrails, so that list
-// is never read. A launch that is refused, rate-limited, or not finished in
-// time, or a session lost during a render, rejects with
+// is never read. A connection found dropped before a render is opened again
+// in that render, and a reconnect that fails or runs out of time falls
+// through to a launch. A launch that is refused, rate-limited, or not
+// finished in time, or a session lost during a render, rejects with
 // RenderUnavailableError, so the caller can retry later. A render that fails
 // otherwise, including one that passes its deadline, rejects with a plain
 // error; resolving null still means the artifact has no preview to render.
