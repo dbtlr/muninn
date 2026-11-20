@@ -13,6 +13,8 @@ import { Hono } from 'hono';
 import { chromium } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vite-plus/test';
 
+import { groupRemains, killGroup, processGroupByPs } from './browser-processes.test-support.js';
+import { browserProcessId } from './chromium-launch.js';
 import {
   createPlaywrightRenderer,
   localUrlFor,
@@ -499,6 +501,37 @@ describe.skipIf(chromiumPath === undefined)(
 
       expect(Date.now() - started).toBeLessThan(4000);
       await impatient.close();
+    });
+
+    it('replaces a browser that stops responding once three renders pass their deadline', async () => {
+      const launches = vi.spyOn(chromium, 'launch');
+      const impatient = createPlaywrightRenderer({ executablePath: chromiumPath, timeoutMs: 1500 });
+      const target = { id: 'page', mediaType: 'text/html' as const, url: `${baseUrl}/a/page` };
+      let pid: number | undefined;
+      let group: number | undefined;
+      try {
+        await impatient.render(target);
+        const stuck = await launches.mock.results[0]?.value;
+        pid = stuck === undefined ? undefined : await browserProcessId(stuck);
+        expect(pid).toBeDefined();
+        // Stopped, it keeps its connection open but never answers.
+        group = await processGroupByPs(pid ?? 0);
+        process.kill(pid ?? 0, 'SIGSTOP');
+
+        await expect(impatient.render(target)).rejects.toThrow(/passed its 1500 ms deadline/u);
+        await expect(impatient.render(target)).rejects.toThrow(/passed its 1500 ms deadline/u);
+        await expect(impatient.render(target)).rejects.toThrow(/passed its 1500 ms deadline/u);
+        const bytes = await impatient.render(target);
+
+        expect(bytes).not.toBeNull();
+        expect([...bytes!.subarray(0, 3)]).toEqual(JPEG_MAGIC);
+        expect(launches).toHaveBeenCalledTimes(2);
+        await expect.poll(() => groupRemains(group ?? 0), { timeout: 10_000 }).toBe(false);
+      } finally {
+        killGroup(group);
+        launches.mockRestore();
+        await impatient.close();
+      }
     });
 
     it('settles a render whose deadline fires while its page is opening', async () => {

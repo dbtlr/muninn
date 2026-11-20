@@ -15,7 +15,8 @@ import type { Browser, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
-import { BASE_CHROMIUM_ARGS } from './chromium-launch.js';
+import { groupRemains, killGroup, processGroupByPs } from './browser-processes.test-support.js';
+import { BASE_CHROMIUM_ARGS, browserProcessId } from './chromium-launch.js';
 import {
   createMermaidRenderer,
   MERMAID_CONTEXT_OPTIONS,
@@ -244,6 +245,48 @@ describe.skipIf(chromiumPath === undefined)(
           ).rejects.toThrow(/timed out|aborted/u);
           expect(Date.now() - started).toBeLessThan(3000);
         } finally {
+          await mermaid.close();
+        }
+      },
+      WARM_UP_TIMEOUT_MS,
+    );
+
+    it(
+      'replaces a browser that stops responding once three drawings pass their deadline',
+      async () => {
+        const launches = vi.spyOn(chromium, 'launch');
+        const mermaid = createMermaidRenderer({
+          executablePath: chromiumPath,
+          scriptPath: mermaidBundle,
+        });
+        let pid: number | undefined;
+        let group: number | undefined;
+        try {
+          expect((await mermaid.render(['graph TD; A-->B']))[0]).toMatch(/^<svg /u);
+          const stuck = await launches.mock.results[0]?.value;
+          pid = stuck === undefined ? undefined : await browserProcessId(stuck);
+          expect(pid).toBeDefined();
+          // Stopped, it keeps its connection open but never answers.
+          group = await processGroupByPs(pid ?? 0);
+          process.kill(pid ?? 0, 'SIGSTOP');
+
+          await expect(
+            mermaid.render(['graph TD; A-->B'], AbortSignal.timeout(1000)),
+          ).rejects.toThrow(/timed out|aborted/u);
+          await expect(
+            mermaid.render(['graph TD; A-->B'], AbortSignal.timeout(1000)),
+          ).rejects.toThrow(/timed out|aborted/u);
+          await expect(
+            mermaid.render(['graph TD; A-->B'], AbortSignal.timeout(1000)),
+          ).rejects.toThrow(/timed out|aborted/u);
+          const [drawn] = await mermaid.render(['graph TD; A-->B'], AbortSignal.timeout(20_000));
+
+          expect(drawn).toMatch(/^<svg /u);
+          expect(launches).toHaveBeenCalledTimes(2);
+          await expect.poll(() => groupRemains(group ?? 0), { timeout: 10_000 }).toBe(false);
+        } finally {
+          killGroup(group);
+          launches.mockRestore();
           await mermaid.close();
         }
       },

@@ -7,8 +7,10 @@ import { mediaDefinition } from '../artifacts/media.js';
 import {
   BASE_CHROMIUM_ARGS,
   closeWhenCreated,
+  createBrowserSlot,
   DEAD_PROXY,
   ignoreFailure,
+  LAUNCH_TIMEOUT_MS,
   SIGNALS_LEFT_TO_SERVER,
   untilAborted,
 } from './chromium-launch.js';
@@ -213,8 +215,8 @@ async function drawMermaidFences(
   }, drawings);
 }
 
-// One shared headless Chromium, launched on first use and relaunched after a
-// crash. Each render gets its own short-lived context, so no cookies, cache,
+// One shared headless Chromium, launched on first use and replaced after a
+// crash or once it stops answering (see createBrowserSlot). Each render gets its own short-lived context, so no cookies, cache,
 // or storage carry over from one artifact to the next. A launch that fails
 // (no Chromium on this machine) is reported once; after that every render
 // declines with null and the gallery keeps its drawn placeholders.
@@ -225,7 +227,6 @@ export function createPlaywrightRenderer({
   report = defaultReport,
   timeoutMs = 15_000,
 }: RendererOptions = {}): ThumbnailRenderer {
-  let browser: Promise<Browser> | undefined;
   let disabled = false;
   // The proxy fence is a launch option, so the browser is pinned to the
   // first origin it renders; every artifact URL comes from the same
@@ -236,7 +237,10 @@ export function createPlaywrightRenderer({
       ? undefined
       : createMermaidRenderer({ executablePath, report, scriptPath: mermaidScriptPath });
 
-  async function launch(origin: string): Promise<Browser> {
+  async function launch(): Promise<Browser> {
+    if (pinnedOrigin === undefined) {
+      throw new Error('Thumbnail renderer launched before its origin was pinned');
+    }
     try {
       const launched = await chromium.launch({
         args: [
@@ -252,22 +256,20 @@ export function createPlaywrightRenderer({
           // that ordering ever changed.
           '--blink-settings=scriptEnabled=false',
         ],
-        proxy: proxyFencedTo(origin),
+        proxy: proxyFencedTo(pinnedOrigin),
+        timeout: LAUNCH_TIMEOUT_MS,
         ...(executablePath === undefined ? {} : { executablePath }),
         ...SIGNALS_LEFT_TO_SERVER,
       });
-      launched.on('disconnected', () => {
-        browser = undefined;
-      });
       return launched;
     } catch (error) {
-      browser = undefined;
       disabled = true;
       const message = error instanceof Error ? error.message : String(error);
       report(`Thumbnail rendering disabled, Chromium failed to launch: ${message}`);
       throw error;
     }
   }
+  const slot = createBrowserSlot(launch);
 
   async function currentBrowser(origin: string): Promise<Browser | null> {
     pinnedOrigin ??= origin;
@@ -275,8 +277,7 @@ export function createPlaywrightRenderer({
       throw new Error(`Thumbnail renderer is pinned to ${pinnedOrigin}, cannot render ${origin}`);
     }
     try {
-      browser ??= launch(origin);
-      return await browser;
+      return await slot.acquire();
     } catch {
       // Already reported by launch(); the caller declines quietly.
       return null;
@@ -348,10 +349,13 @@ export function createPlaywrightRenderer({
       return capture(context, target, deadlineReached.signal);
     })();
     try {
-      return await untilAborted(capturing, deadlineReached.signal);
+      const captured = await untilAborted(capturing, deadlineReached.signal);
+      slot.rendered(launched);
+      return captured;
     } finally {
       clearTimeout(deadline);
       if (deadlineReached.signal.aborted) {
+        slot.missed(launched);
         void ignoreFailure(capturing);
         void closeWhenCreated(creating);
       } else {
@@ -362,10 +366,7 @@ export function createPlaywrightRenderer({
 
   return {
     close: async () => {
-      await Promise.all([
-        mermaid?.close(),
-        browser === undefined ? undefined : browser.then(async (launched) => launched.close()),
-      ]);
+      await Promise.all([mermaid?.close(), slot.close()]);
     },
     render,
   };
