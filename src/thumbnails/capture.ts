@@ -51,8 +51,9 @@ function imagePage(url: string): string {
 // What remains is declarative loads (img, iframe, stylesheet, meta refresh),
 // fenced twice. The launch fence (the second obligation above; on Node, a
 // proxy nobody listens on) stops every connection to anywhere but the render
-// origin's host and port. This request filter then narrows that to GETs,
-// which keeps /mcp out of reach even from a form.
+// origin's host and port. This request filter then narrows that to GETs on
+// the render origin, scheme included, which keeps /mcp out of reach even
+// from a form.
 //
 // A GET under the public base URL names this same server by the address
 // visitors use, which the renderer may not be able to reach. It never goes
@@ -236,7 +237,8 @@ export function canCapture(target: ThumbnailTarget): boolean {
 // Renders one artifact in `browser` and resolves to JPEG bytes, or null when
 // it cannot be captured (see canCapture) or the server did not serve it.
 // Each render gets its own short-lived context, so no cookies, cache, or
-// storage carry over from one artifact to the next. Rejects when the deadline passes or the browser fails.
+// storage carry over from one artifact to the next. Rejects when the
+// deadline passes or the browser fails.
 //
 // One deadline covers the whole render, context creation included, raced
 // against the work rather than enforced by closing the context: Playwright
