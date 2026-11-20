@@ -14,10 +14,10 @@ import { chromium } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vite-plus/test';
 
 import { groupRemains, killGroup, processGroupByPs } from './browser-processes.test-support.js';
+import { localUrlFor } from './capture.js';
 import { browserProcessId } from './chromium-launch.js';
 import {
   createPlaywrightRenderer,
-  localUrlFor,
   proxyFencedTo,
   resolveChromiumPath,
 } from './playwright-renderer.js';

@@ -92,6 +92,38 @@ export default defineConfig({
           // with node:sqlite's synchronous DatabaseSync, not async I/O we
           // forgot to await.
           { files: ['src/data/**/*.ts'], rules: { 'node/no-sync': 'off' } },
+          // The thumbnail render rules both runtimes share. The Worker
+          // bundle must be able to reach them (ADR-0009), so they take only
+          // types from Node, Playwright, and the Node-only renderer modules.
+          {
+            files: [
+              'src/thumbnails/capture.ts',
+              'src/thumbnails/settle.ts',
+              'src/thumbnails/types.ts',
+            ],
+            rules: {
+              'no-restricted-imports': [
+                'error',
+                {
+                  patterns: [
+                    {
+                      allowTypeImports: true,
+                      group: [
+                        'node:*',
+                        'node:*/**',
+                        'playwright-core',
+                        '**/chromium-launch.js',
+                        '**/mermaid-renderer.js',
+                        '**/playwright-renderer.js',
+                      ],
+                      message:
+                        'Worker-reachable thumbnail code may import only types from Node-only modules.',
+                    },
+                  ],
+                },
+              ],
+            },
+          },
         ],
       },
       node: true,
