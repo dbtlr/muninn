@@ -1,3 +1,5 @@
+import type { BrowserWorker } from '@cloudflare/playwright';
+
 import { createArtifactService } from './artifacts/service.js';
 import { createOwnerAuth, resolveOwnerPassword } from './auth/owner-auth.js';
 import type { OwnerAuth } from './auth/owner-auth.js';
@@ -20,6 +22,9 @@ import type { AssetsBinding } from './worker-static-files.js';
 // process.env, where the shared app reads the public base URL.
 export type WorkerEnv = {
   ASSETS: AssetsBinding;
+  // Browser Rendering, for gallery previews
+  // (thumbnails/browser-rendering-renderer.ts).
+  BROWSER: BrowserWorker;
   MUNINN_BUCKET: R2BucketBinding;
   MUNINN_DB: D1DatabaseBinding;
   MUNINN_OWNER_PASSWORD?: unknown;
@@ -90,8 +95,10 @@ export function resolveWorkerConfig(env: WorkerEnv): { password: string } {
 export type WorkerServices = AppServices & { auth: OwnerAuth; secrets: SecretService };
 
 // The Worker's composition root: the shared services on D1 and R2, with
-// owner auth always on. Gallery previews stay placeholders: nothing renders
-// them on the Worker yet, so the thumbnail store is only read.
+// owner auth always on. The thumbnail store is only read here: requests show
+// a stored preview or the drawn placeholder. The Browser Rendering renderer
+// (thumbnails/browser-rendering-renderer.ts) exists, but nothing on the
+// Worker renders previews with it yet.
 export function createWorkerServices(env: WorkerEnv): WorkerServices {
   const { password } = resolveWorkerConfig(env);
   const auth = createOwnerAuth({
