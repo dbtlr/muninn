@@ -1,4 +1,6 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 
 import type { Browser, BrowserContext } from 'playwright-core';
 
@@ -39,15 +41,25 @@ export const LAUNCH_TIMEOUT_MS = 60_000;
 // does not cost a relaunch.
 export const MISSES_BEFORE_REPLACING = 3;
 
-// How long the launch may take to report the browser's process. A browser
-// that does not answer by then is kept, but cannot be killed as a group.
-const PROCESS_LOOKUP_TIMEOUT_MS = 5000;
+// How long the launch may take to report the browser's process; most of a
+// slow host's launch budget, since the render that launched the browser waits
+// for it. A browser that does not answer by then is still used, but its
+// process group is unknown: once it is retired, its processes are ended only
+// if Playwright's close succeeds, and a stopped browser's never are. They keep
+// running until Muninn exits.
+const PROCESS_LOOKUP_TIMEOUT_MS = 30_000;
 
-// The shared Chromium behind one renderer: launched on first use, replaced
-// after a crash or once it stops answering, and ended with every process it
-// started. A render reports how it went: `rendered` when it finished,
-// `missed` when it passed its deadline. Reports about a browser the slot
-// already replaced are ignored.
+// How long closing the slot waits for Playwright's graceful close before it
+// kills the browser's process group anyway. A stopped browser never answers
+// the close request, and Playwright then waits for it forever.
+const CLOSE_TIMEOUT_MS = 2000;
+
+// The shared Chromium behind one renderer: launched on first use, and
+// replaced after a crash or once it stops answering. When the launch found
+// the browser's process group (see PROCESS_LOOKUP_TIMEOUT_MS), retiring or
+// closing it ends every process it started. A render reports how it went:
+// `rendered` when it finished, `missed` when it passed its deadline. Reports
+// about a browser the slot already replaced are ignored.
 export type BrowserSlot = {
   // The current browser, launching one if there is none. Rejects when the
   // launch fails; the next call launches again.
@@ -86,24 +98,45 @@ export async function browserProcessId(browser: Browser): Promise<number | undef
   }
 }
 
-// The process group `pid` belongs to, from /proc on Linux. Debian's
-// chromium-headless-shell runs the browser under a parent process that leads
-// the group, so the browser's own id is not the group's. Elsewhere (macOS)
-// the browser process leads its group, and its id is returned.
+// The process group `pid` belongs to. The browser's own id is not always
+// the group's: Debian's chromium-headless-shell, and any Chromium started by
+// a wrapper script, runs the browser under a parent that leads the group.
+// Read from /proc on Linux (the Docker image has no ps), from ps where there
+// is no /proc (macOS), and taken to be `pid` itself when neither answers.
 export async function processGroupOf(pid: number): Promise<number> {
+  const group = (await groupFromProc(pid)) ?? (await groupFromPs(pid));
+  return group ?? pid;
+}
+
+async function groupFromProc(pid: number): Promise<number | undefined> {
   try {
     const stat = await readFile(`/proc/${String(pid)}/stat`, 'utf8');
     // The command name may hold spaces and parentheses; the fields after its
     // closing parenthesis are state, parent, then process group.
-    const group = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2]);
-    return Number.isInteger(group) && group > 0 ? group : pid;
+    return positiveInteger(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2]);
   } catch {
-    return pid;
+    return undefined;
   }
 }
 
-// The browser's process group, or undefined when it cannot be told apart
-// from this server's own (which a group kill would end too).
+async function groupFromPs(pid: number): Promise<number | undefined> {
+  try {
+    const { stdout } = await promisify(execFile)('ps', ['-o', 'pgid=', '-p', String(pid)]);
+    return positiveInteger(stdout.trim());
+  } catch {
+    return undefined;
+  }
+}
+
+function positiveInteger(text: string | undefined): number | undefined {
+  const value = Number(text);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+// The browser's process group, or undefined when the lookup fails or finds
+// this server's own group (which a group kill would end too). The comparison
+// is only as good as processGroupOf: where neither /proc nor ps answers,
+// both groups fall back to process ids, and a shared group goes unnoticed.
 async function browserProcessGroup(browser: Browser): Promise<number | undefined> {
   const pid = await browserProcessId(browser);
   if (pid === undefined) {
@@ -206,7 +239,9 @@ export function createBrowserSlot(
         // A launch that failed was already reported; there is nothing to close.
         return;
       }
-      await ignoreFailure(entry.browser.close());
+      await ignoreFailure(
+        untilAborted(entry.browser.close(), AbortSignal.timeout(CLOSE_TIMEOUT_MS)),
+      );
       end(entry);
     },
     missed: (browser) => {

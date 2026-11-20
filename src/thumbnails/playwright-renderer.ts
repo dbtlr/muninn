@@ -173,6 +173,9 @@ function watchArtifactResponse(page: Page, url: string): () => boolean {
   return () => loaded;
 }
 
+// Where a render is, as far as its deadline cares.
+type RenderProgress = { drawingDiagrams: boolean };
+
 // Replaces each of a Markdown page's mermaid fences with its drawing. The
 // page has scripts off: Playwright reads and writes its DOM from its own
 // isolated world, and markup set that way never runs a script. markdown.ts
@@ -181,13 +184,23 @@ function watchArtifactResponse(page: Page, url: string): () => boolean {
 // the diagram source. A fence Mermaid cannot draw keeps its source, and so
 // does every fence when the drawing fails (reported): the preview is still
 // worth keeping. Only the render's deadline fails the render.
+//
+// `progress.drawingDiagrams` is true exactly while the render waits on the
+// Mermaid renderer. It is left set when that wait ends at the deadline, so
+// the render can tell the deadline passed there.
 async function drawMermaidFences(
   page: Page,
   {
     mermaid,
+    progress,
     report,
     signal,
-  }: { mermaid: MermaidRenderer; report: (message: string) => void; signal: AbortSignal },
+  }: {
+    mermaid: MermaidRenderer;
+    progress: RenderProgress;
+    report: (message: string) => void;
+    signal: AbortSignal;
+  },
 ): Promise<void> {
   const fences = page.locator('pre.mermaid');
   const texts = await fences.allTextContents();
@@ -196,12 +209,15 @@ async function drawMermaidFences(
   }
   let drawings: (string | null)[];
   try {
+    progress.drawingDiagrams = true;
     drawings = await mermaid.render(texts, signal);
+    progress.drawingDiagrams = false;
   } catch (error) {
     if (signal.aborted) {
       throw error;
     }
     const message = error instanceof Error ? error.message : String(error);
+    progress.drawingDiagrams = false;
     report(`Mermaid diagrams left as source in a thumbnail: ${message}`);
     return;
   }
@@ -216,10 +232,13 @@ async function drawMermaidFences(
 }
 
 // One shared headless Chromium, launched on first use and replaced after a
-// crash or once it stops answering (see createBrowserSlot). Each render gets its own short-lived context, so no cookies, cache,
-// or storage carry over from one artifact to the next. A launch that fails
-// (no Chromium on this machine) is reported once; after that every render
-// declines with null and the gallery keeps its drawn placeholders.
+// crash or once it stops answering (see createBrowserSlot). Each render gets
+// its own short-lived context, so no cookies, cache, or storage carry over
+// from one artifact to the next. A first launch that fails (no Chromium on
+// this machine) is reported once; after that every render declines with null
+// and the gallery keeps its drawn placeholders. A relaunch that fails after a
+// browser has run is reported and declines that render only; the next render
+// launches again.
 export function createPlaywrightRenderer({
   executablePath,
   mermaidScriptPath,
@@ -228,6 +247,7 @@ export function createPlaywrightRenderer({
   timeoutMs = 15_000,
 }: RendererOptions = {}): ThumbnailRenderer {
   let disabled = false;
+  let launchedOnce = false;
   // The proxy fence is a launch option, so the browser is pinned to the
   // first origin it renders; every artifact URL comes from the same
   // server, so a second origin is a caller bug, not a case to support.
@@ -261,11 +281,16 @@ export function createPlaywrightRenderer({
         ...(executablePath === undefined ? {} : { executablePath }),
         ...SIGNALS_LEFT_TO_SERVER,
       });
+      launchedOnce = true;
       return launched;
     } catch (error) {
-      disabled = true;
       const message = error instanceof Error ? error.message : String(error);
-      report(`Thumbnail rendering disabled, Chromium failed to launch: ${message}`);
+      if (launchedOnce) {
+        report(`Thumbnail render declined, Chromium failed to relaunch: ${message}`);
+      } else {
+        disabled = true;
+        report(`Thumbnail rendering disabled, Chromium failed to launch: ${message}`);
+      }
       throw error;
     }
   }
@@ -287,7 +312,7 @@ export function createPlaywrightRenderer({
   async function capture(
     context: BrowserContext,
     target: ThumbnailTarget,
-    signal: AbortSignal,
+    { progress, signal }: { progress: RenderProgress; signal: AbortSignal },
   ): Promise<Uint8Array | null> {
     const page = await context.newPage();
     page.setDefaultTimeout(timeoutMs);
@@ -303,7 +328,7 @@ export function createPlaywrightRenderer({
     // Only a Markdown page: an HTML artifact is the author's own markup, so
     // a `pre.mermaid` there is not a fence this app rendered.
     if (mermaid !== undefined && mediaDefinition(target.mediaType).renderingMode === 'markdown') {
-      await drawMermaidFences(page, { mermaid, report, signal });
+      await drawMermaidFences(page, { mermaid, progress, report, signal });
     }
     const shot = await page.screenshot({ quality: JPEG_QUALITY, type: 'jpeg' });
     return new Uint8Array(shot);
@@ -325,7 +350,9 @@ export function createPlaywrightRenderer({
     // Chromium that hangs without disconnecting never settles newContext().
     // Either would hold the queue for good. On the deadline the render rejects
     // at once and closes the context in the background, whenever it exists;
-    // the abort also ends the Mermaid step (see mermaid-renderer.ts).
+    // the abort also ends the Mermaid step (see mermaid-renderer.ts). A
+    // deadline passed in that step counts against the Mermaid browser, which
+    // the Mermaid renderer reports itself, not against this one.
     const deadlineReached = new AbortController();
     const deadline = setTimeout(() => {
       deadlineReached.abort(
@@ -343,10 +370,11 @@ export function createPlaywrightRenderer({
       viewport: VIEWPORT,
     });
     let context: BrowserContext | undefined;
+    const progress: RenderProgress = { drawingDiagrams: false };
     const capturing = (async () => {
       context = await creating;
       await confineToOrigin(context, origin, publicBaseUrl);
-      return capture(context, target, deadlineReached.signal);
+      return capture(context, target, { progress, signal: deadlineReached.signal });
     })();
     try {
       const captured = await untilAborted(capturing, deadlineReached.signal);
@@ -355,7 +383,9 @@ export function createPlaywrightRenderer({
     } finally {
       clearTimeout(deadline);
       if (deadlineReached.signal.aborted) {
-        slot.missed(launched);
+        if (!progress.drawingDiagrams) {
+          slot.missed(launched);
+        }
         void ignoreFailure(capturing);
         void closeWhenCreated(creating);
       } else {

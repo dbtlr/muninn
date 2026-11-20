@@ -293,6 +293,49 @@ describe.skipIf(chromiumPath === undefined)(
       WARM_UP_TIMEOUT_MS,
     );
 
+    it(
+      'draws nothing for a render whose relaunch fails, then launches again for the next',
+      async () => {
+        const launch = chromium.launch.bind(chromium);
+        const launches = vi.spyOn(chromium, 'launch');
+        launches.mockImplementation(async (...args) => {
+          if (launches.mock.calls.length === 2) {
+            throw new Error('relaunch failed');
+          }
+          return launch(...args);
+        });
+        const reported: string[] = [];
+        const mermaid = createMermaidRenderer({
+          executablePath: chromiumPath,
+          report: (message) => {
+            reported.push(message);
+          },
+          scriptPath: mermaidBundle,
+        });
+        let group: number | undefined;
+        try {
+          expect((await mermaid.render(['graph TD; A-->B']))[0]).toMatch(/^<svg /u);
+          const first = await launches.mock.results[0]?.value;
+          group = await processGroupByPs((await browserProcessId(first)) ?? 0);
+          killGroup(group);
+          await expect.poll(() => first?.isConnected(), { timeout: 10_000 }).toBe(false);
+
+          await expect(mermaid.render(['graph TD; A-->B'])).resolves.toEqual([null]);
+          const [drawn] = await mermaid.render(['graph TD; A-->B']);
+
+          expect(drawn).toMatch(/^<svg /u);
+          expect(launches).toHaveBeenCalledTimes(3);
+          expect(reported).toEqual([expect.stringMatching(/relaunch failed/u)]);
+          expect(reported[0]).not.toMatch(/disabled/u);
+        } finally {
+          killGroup(group);
+          launches.mockRestore();
+          await mermaid.close();
+        }
+      },
+      WARM_UP_TIMEOUT_MS,
+    );
+
     it('stops a render whose signal aborts at any point while the page opens', async () => {
       const stuck = join(scratch, 'stuck.js');
       await writeFile(

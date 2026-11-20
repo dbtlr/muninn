@@ -59,13 +59,10 @@ async function draws(browser: Browser): Promise<void> {
 }
 
 describe('processGroupOf', () => {
-  // macOS has no /proc; there the browser process leads its own group.
-  it.skipIf(process.platform !== 'linux')(
-    "finds this process's group as ps reports it",
-    async () => {
-      await expect(processGroupOf(process.pid)).resolves.toBe(await processGroupByPs(process.pid));
-    },
-  );
+  // Linux answers from /proc; macOS, which has no /proc, asks ps.
+  it("finds this process's group as ps reports it", async () => {
+    await expect(processGroupOf(process.pid)).resolves.toBe(await processGroupByPs(process.pid));
+  });
 });
 
 describe.skipIf(chromiumPath === undefined)('createBrowserSlot', { timeout: 60_000 }, () => {
@@ -145,6 +142,54 @@ describe.skipIf(chromiumPath === undefined)('createBrowserSlot', { timeout: 60_0
     await slot.close();
 
     await expect.poll(() => groupRemains(group), { timeout: 10_000 }).toBe(false);
+  });
+
+  it('ends every process of a stopped browser when it closes, without waiting for it', async () => {
+    const slot = createBrowserSlot(async () => chromium.launch(LAUNCH_OPTIONS));
+    let group: number | undefined;
+    try {
+      const pid = await browserPid(await slot.acquire());
+      group = await processGroupByPs(pid);
+      // Stopped, it never acts on Playwright's close request.
+      process.kill(pid, 'SIGSTOP');
+
+      await expect(untilAborted(slot.close(), AbortSignal.timeout(5000))).resolves.toBeUndefined();
+
+      await expect.poll(() => groupRemains(group ?? 0), { timeout: 10_000 }).toBe(false);
+    } finally {
+      killGroup(group);
+    }
+  });
+
+  it('launches a new browser after one that died during its launch', async () => {
+    let attempts = 0;
+    let group: number | undefined;
+    const slot = createBrowserSlot(async () => {
+      attempts += 1;
+      const browser = await chromium.launch(LAUNCH_OPTIONS);
+      if (attempts === 1) {
+        const pid = await browserPid(browser);
+        group = await processGroupByPs(pid);
+        const disconnected = Promise.withResolvers<unknown>();
+        browser.once('disconnected', disconnected.resolve);
+        process.kill(pid, 'SIGKILL');
+        await disconnected.promise;
+      }
+      return browser;
+    });
+    try {
+      // The render that launched it may get the dead browser; the next one
+      // must not.
+      const dead = await slot.acquire();
+      const fresh = await slot.acquire();
+
+      expect(fresh).not.toBe(dead);
+      expect(fresh.isConnected()).toBe(true);
+      await draws(fresh);
+    } finally {
+      killGroup(group);
+      await slot.close();
+    }
   });
 
   it('launches again after a launch fails', async () => {

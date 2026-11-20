@@ -169,10 +169,13 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-// One headless Chromium for Mermaid alone, launched on first use and replaced
-// after a crash or once it stops answering (see createBrowserSlot). It never shares a process with an artifact page:
-// the artifact browser disables scripts for its whole life, and this one
-// never loads anything an artifact supplies except diagram text as data.
+// One headless Chromium for Mermaid alone, launched on first use and
+// replaced after a crash or once it stops answering (see createBrowserSlot).
+// It never shares a process with an artifact page: the artifact browser
+// disables scripts for its whole life, and this one never loads anything an
+// artifact supplies except diagram text as data. A first launch that fails
+// disables Mermaid rendering; a relaunch that fails after a browser has run
+// is reported and draws nothing for that render only.
 export function createMermaidRenderer({
   executablePath,
   report = defaultReport,
@@ -180,7 +183,12 @@ export function createMermaidRenderer({
 }: MermaidRendererOptions): MermaidRenderer {
   let bundle: Promise<string> | undefined;
   let disabled = false;
-  const slot = createBrowserSlot(async () => chromium.launch(mermaidLaunchOptions(executablePath)));
+  let launchedOnce = false;
+  const slot = createBrowserSlot(async () => {
+    const launched = await chromium.launch(mermaidLaunchOptions(executablePath));
+    launchedOnce = true;
+    return launched;
+  });
 
   function disable(reason: string): void {
     if (!disabled) {
@@ -190,8 +198,9 @@ export function createMermaidRenderer({
   }
 
   // The bundle and the browser, or null once either is known to be missing
-  // or unusable. A launch still in progress when the signal aborts goes on
-  // in the background, and the next render uses it.
+  // or unusable, or when a relaunch fails (the next render launches again).
+  // A launch still in progress when the signal aborts goes on in the
+  // background, and the next render uses it.
   async function ready(
     signal: AbortSignal | undefined,
   ): Promise<{ browser: Browser; script: string } | null> {
@@ -222,7 +231,11 @@ export function createMermaidRenderer({
       if (signal?.aborted === true) {
         throw error;
       }
-      disable(describe(error));
+      if (launchedOnce) {
+        report(`Mermaid diagrams left as source, Chromium failed to relaunch: ${describe(error)}`);
+      } else {
+        disable(describe(error));
+      }
       return null;
     }
   }

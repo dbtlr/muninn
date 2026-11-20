@@ -35,6 +35,11 @@ const PNG = Uint8Array.from(
 
 const JPEG_MAGIC = [255, 216, 255];
 
+// Whether launch options are the Mermaid browser's (see mermaidLaunchOptions).
+function isMermaidLaunch(options: unknown): boolean {
+  return JSON.stringify(options).includes('--js-flags=--jitless');
+}
+
 async function listen(app: Hono): Promise<{ server: ServerType; url: string }> {
   const server = serve({ fetch: app.fetch, port: 0 });
   await once(server, 'listening');
@@ -531,6 +536,94 @@ describe.skipIf(chromiumPath === undefined)(
         killGroup(group);
         launches.mockRestore();
         await impatient.close();
+      }
+    });
+
+    it('counts a deadline passed while drawing diagrams against the Mermaid browser alone', async () => {
+      const launches = vi.spyOn(chromium, 'launch');
+      const timeoutMs = 4000;
+      const impatient = createPlaywrightRenderer({
+        executablePath: chromiumPath,
+        mermaidScriptPath: join(scratch, 'mermaid.js'),
+        timeoutMs,
+      });
+      const markdown = {
+        id: 'diagrams',
+        mediaType: 'text/markdown' as const,
+        url: `${baseUrl}/a/diagrams`,
+      };
+      const launchCount = (mermaid: boolean): number =>
+        launches.mock.calls.filter(([options]) => isMermaidLaunch(options) === mermaid).length;
+      let group: number | undefined;
+      try {
+        await expect(impatient.render(markdown)).resolves.not.toBeNull();
+        const mermaidLaunch = launches.mock.calls.findIndex(([options]) =>
+          isMermaidLaunch(options),
+        );
+        const pid = await browserProcessId(await launches.mock.results[mermaidLaunch]?.value);
+        expect(pid).toBeDefined();
+        group = await processGroupByPs(pid ?? 0);
+        // Stopped, the Mermaid browser never answers; the artifact browser
+        // still loads every page.
+        process.kill(pid ?? 0, 'SIGSTOP');
+
+        await expect(impatient.render(markdown)).rejects.toThrow(/passed its 4000 ms deadline/u);
+        await expect(impatient.render(markdown)).rejects.toThrow(/passed its 4000 ms deadline/u);
+        await expect(impatient.render(markdown)).rejects.toThrow(/passed its 4000 ms deadline/u);
+        await expect(
+          impatient.render({ id: 'page', mediaType: 'text/html', url: `${baseUrl}/a/page` }),
+        ).resolves.not.toBeNull();
+
+        expect(launchCount(false)).toBe(1);
+        drawnTexts = [];
+        await expect(impatient.render(markdown)).resolves.not.toBeNull();
+        await expect.poll(() => drawnTexts.length).toBeGreaterThan(0);
+        expect(launchCount(false)).toBe(1);
+        expect(launchCount(true)).toBe(2);
+      } finally {
+        killGroup(group);
+        launches.mockRestore();
+        await impatient.close();
+      }
+    }, 60_000);
+
+    it('declines a render whose relaunch fails, then launches again for the next', async () => {
+      const launch = chromium.launch.bind(chromium);
+      const launches = vi.spyOn(chromium, 'launch');
+      launches.mockImplementation(async (...args) => {
+        if (launches.mock.calls.length === 2) {
+          throw new Error('relaunch failed');
+        }
+        return launch(...args);
+      });
+      const reported: string[] = [];
+      const relaunching = createPlaywrightRenderer({
+        executablePath: chromiumPath,
+        report: (message) => {
+          reported.push(message);
+        },
+      });
+      const target = { id: 'page', mediaType: 'text/html' as const, url: `${baseUrl}/a/page` };
+      let group: number | undefined;
+      try {
+        await expect(relaunching.render(target)).resolves.not.toBeNull();
+        const first = await launches.mock.results[0]?.value;
+        group = await processGroupByPs((await browserProcessId(first)) ?? 0);
+        killGroup(group);
+        await expect.poll(() => first?.isConnected(), { timeout: 10_000 }).toBe(false);
+
+        await expect(relaunching.render(target)).resolves.toBeNull();
+        const bytes = await relaunching.render(target);
+
+        expect(bytes).not.toBeNull();
+        expect([...bytes!.subarray(0, 3)]).toEqual(JPEG_MAGIC);
+        expect(launches).toHaveBeenCalledTimes(3);
+        expect(reported).toEqual([expect.stringMatching(/relaunch failed/u)]);
+        expect(reported[0]).not.toMatch(/disabled/u);
+      } finally {
+        killGroup(group);
+        launches.mockRestore();
+        await relaunching.close();
       }
     });
 
