@@ -126,10 +126,12 @@ describe('createMermaidRenderer without a bundle', () => {
       await expect(mermaid.render(['graph TD; A-->B'], AbortSignal.abort())).rejects.toThrow(
         /aborted/u,
       );
-      await delay(500);
 
       // The failure is reported by the launch itself, though no render was
       // waiting for it, and the next render tries no second launch.
+      await expect.poll(() => reported, { timeout: 10_000 }).toHaveLength(1);
+      // A rejection nobody handles is reported a turn after it settles.
+      await delay(50);
       expect(unhandled).toEqual([]);
       expect(reported).toEqual([expect.stringMatching(/^Mermaid thumbnails disabled, /u)]);
       await expect(mermaid.render(['graph TD; A-->B'])).resolves.toEqual([null]);
