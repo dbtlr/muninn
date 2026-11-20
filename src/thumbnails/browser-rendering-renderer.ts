@@ -132,9 +132,8 @@ export class RenderUnavailableError extends Error {
   }
 }
 
-// An open connection to a session, and a promise that resolves once
-// Playwright reports it disconnected.
-type Connection = { browser: RenderingBrowser; disconnected: Promise<void> };
+// An open connection to a session.
+type Connection = { browser: RenderingBrowser };
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -153,20 +152,26 @@ async function within<T>(work: Promise<T>, ms: number, message: string): Promise
   }
 }
 
-// Whether `connection` reports itself disconnected within `ms`.
-async function disconnectsWithin(connection: Connection, ms: number): Promise<boolean> {
-  const { promise: expired, resolve } = Promise.withResolvers<boolean>();
+// Whether `connection` is disconnected, or reports itself so within `ms`.
+// The listener is removed afterwards, so failures on a connection that stays
+// up leave nothing attached to it.
+async function disconnectsWithin({ browser }: Connection, ms: number): Promise<boolean> {
+  if (!browser.isConnected()) {
+    return true;
+  }
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  const onDisconnected = (): void => {
+    resolve(true);
+  };
+  browser.on('disconnected', onDisconnected);
   const timer = setTimeout(() => {
     resolve(false);
   }, ms);
-  const disconnecting = (async () => {
-    await connection.disconnected;
-    return true;
-  })();
   try {
-    return await Promise.race([disconnecting, expired]);
+    return await promise;
   } finally {
     clearTimeout(timer);
+    browser.off('disconnected', onDisconnected);
   }
 }
 
@@ -251,11 +256,7 @@ export function createBrowserRenderingRenderer({
     const remembered = session.id;
     const browser =
       (remembered === undefined ? undefined : await reconnect(remembered)) ?? (await launch());
-    const { promise: disconnected, resolve } = Promise.withResolvers<void>();
-    browser.on('disconnected', () => {
-      resolve();
-    });
-    return { browser, disconnected };
+    return { browser };
   }
 
   // The open connection, opening one if there is none, with the promise it

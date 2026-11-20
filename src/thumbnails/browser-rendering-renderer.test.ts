@@ -85,6 +85,8 @@ type FakeConnection = {
   browser: RenderingBrowser;
   closes: () => number;
   drop: () => void;
+  // How many `disconnected` listeners are attached right now.
+  listeners: () => number;
 };
 
 async function tick(): Promise<void> {
@@ -104,7 +106,7 @@ function fakeConnection(
 ): FakeConnection {
   let connected = true;
   let closeCount = 0;
-  const onDisconnected: (() => void)[] = [];
+  const onDisconnected = new Set<() => void>();
   const drop = (): void => {
     if (connected) {
       connected = false;
@@ -206,9 +208,14 @@ function fakeConnection(
         },
       };
     },
+    off: (event: string, listener: () => void) => {
+      if (event === 'disconnected') {
+        onDisconnected.delete(listener);
+      }
+    },
     on: (event: string, listener: () => void) => {
       if (event === 'disconnected') {
-        onDisconnected.push(listener);
+        onDisconnected.add(listener);
       }
     },
     sessionId: () => sessionId,
@@ -218,6 +225,7 @@ function fakeConnection(
     browser: browser as unknown as RenderingBrowser,
     closes: () => closeCount,
     drop,
+    listeners: () => onDisconnected.size,
   };
 }
 
@@ -544,6 +552,18 @@ describe('createBrowserRenderingRenderer', () => {
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(RenderUnavailableError);
     expect(error).toHaveProperty('message', expect.stringMatching(/Unable to capture screenshot/u));
+  });
+
+  it('leaves no listener on a connection that stays up after renders fail', async () => {
+    const { api, connectionAt, sessionNamed } = fakeBrowserRendering();
+    const failing = renderer(api);
+    await failing.render(HTML_TARGET);
+    sessionNamed('launched-1').behaviour = 'fails';
+
+    await rejectionOf(failing.render(HTML_TARGET));
+    await rejectionOf(failing.render(HTML_TARGET));
+
+    expect(connectionAt(0).listeners()).toBe(0);
   });
 
   it('rejects with a plain error when a render passes its deadline', async () => {
