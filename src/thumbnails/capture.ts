@@ -1,7 +1,7 @@
 import type { Browser, BrowserContext, Page } from 'playwright-core';
 
 import { mediaDefinition } from '../artifacts/media.js';
-import { closeWhenCreated, ignoreFailure, untilAborted } from './settle.js';
+import { closeQuietly, closeWhenCreated, ignoreFailure, untilAborted } from './settle.js';
 import type { MermaidRenderer, ThumbnailTarget } from './types.js';
 
 // The render rules for one gallery preview, shared by every runtime: what a
@@ -197,6 +197,11 @@ export type CaptureHooks = {
   rendered: () => void;
 };
 
+// Consecutive renders that may pass their deadline on one browser before
+// its runtime takes it for stuck and replaces it. More than one, so a single
+// slow artifact does not cost a relaunch.
+export const MISSES_BEFORE_REPLACING = 3;
+
 async function capture(
   context: BrowserContext,
   target: ThumbnailTarget,
@@ -288,11 +293,10 @@ export async function captureThumbnail(
       timeoutMs,
     });
   })();
+  let captured: Uint8Array | null;
   try {
-    const captured = await untilAborted(capturing, deadlineReached.signal);
-    hooks.rendered();
-    return captured;
-  } finally {
+    captured = await untilAborted(capturing, deadlineReached.signal);
+  } catch (error) {
     clearTimeout(deadline);
     if (deadlineReached.signal.aborted) {
       if (!progress.drawingDiagrams) {
@@ -300,8 +304,15 @@ export async function captureThumbnail(
       }
       void ignoreFailure(capturing);
       void closeWhenCreated(creating);
-    } else {
-      await context?.close();
+    } else if (context !== undefined) {
+      // The render failed, often because the browser went away, and then
+      // closing its context fails too. That second failure would hide why.
+      await closeQuietly(context);
     }
+    throw error;
   }
+  clearTimeout(deadline);
+  hooks.rendered();
+  await context?.close();
+  return captured;
 }
