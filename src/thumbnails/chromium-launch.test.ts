@@ -138,10 +138,16 @@ describe.skipIf(chromiumPath === undefined)('createBrowserSlot', { timeout: 60_0
       const pid = await browserPid(remote);
       group = await processGroupByPs(pid);
       process.kill(pid, 'SIGSTOP');
+      const signals = vi.spyOn(process, 'kill');
+      try {
+        slot.missed(remote);
+        slot.missed(remote);
+        slot.missed(remote);
 
-      slot.missed(remote);
-      slot.missed(remote);
-      slot.missed(remote);
+        expect(signals).not.toHaveBeenCalledWith(-group, 'SIGKILL');
+      } finally {
+        signals.mockRestore();
+      }
 
       // Replaced, but left alone: its group is still there.
       vi.unstubAllEnvs();
