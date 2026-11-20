@@ -110,8 +110,9 @@ network.
   may hold a session that another Worker launched without guardrails. As on Node, three renders in
   a row that pass their deadline retire the session, which the renderer then ends over CDP. A
   connection found dropped before a render is replaced by reconnecting the remembered session, and
-  a reconnect that fails or takes longer than 10 seconds falls through to a launch. A refused launch, a launch that takes longer than 10
-  seconds, or a session lost during a render rejects with `RenderUnavailableError`, so the caller
+  a reconnect that fails or takes longer than 10 seconds falls through to a launch. A refused
+  launch, a launch that takes longer than 10 seconds, or a session lost during a render rejects
+  with `RenderUnavailableError`, so the caller
   can retry later. A session counts as lost only when Playwright reports it disconnected, never by
   an error's message; when a render fails and its session is lost too, the loss wins, since a
   retry reconnects or launches and an error the artifact itself causes then comes back plain. Any
