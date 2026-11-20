@@ -1,8 +1,8 @@
 import type { BrowserContext } from 'playwright-core';
 
-// Promise helpers both runtimes' thumbnail renderers use to settle a render
-// on its deadline without waiting on a browser that may never answer. Type
-// imports only: the Worker bundle reaches this file (see capture.ts).
+// Promise helpers for settling thumbnail work on a deadline without waiting
+// on a browser that may never answer. capture.ts uses them, so the Worker
+// bundle must be able to reach this file: type imports only.
 
 // Closes a render's context, ignoring one that a deadline or crash already
 // closed.

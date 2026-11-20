@@ -6,8 +6,16 @@ import type { MermaidRenderer, ThumbnailTarget } from './types.js';
 
 // The render rules for one gallery preview, shared by every runtime: what a
 // render may load, how the page is drawn, and the deadline that bounds it.
-// Each runtime launches its own browser and fences its network at launch
-// (Node: playwright-renderer.ts), then hands that browser to captureThumbnail.
+// Each runtime launches its own browser, then hands it to captureThumbnail.
+// These rules hold only when that launch meets two obligations (Node meets
+// both in playwright-renderer.ts):
+// - Scripts off from launch, in every frame and process. The per-context
+//   switch set here is applied after a frame exists, and a sandboxed srcdoc
+//   frame in a process of its own can run script before it applies.
+// - A network fence below the browser that lets connections reach only the
+//   render host, from any page or frame. The request filter here cannot see
+//   WebSockets or every request from a sandboxed frame.
+// A runtime that cannot meet one of them must close that gap another way.
 // Type imports only from Playwright and Node: the Worker bundle must be able
 // to reach this file, and the lint config enforces it.
 
@@ -31,25 +39,25 @@ function imagePage(url: string): string {
 // run in a viewer's browser inside an opaque-origin sandbox, but a page
 // rendered here runs with nobody watching, and every script-driven network
 // path (fetch, WebSocket, WebTransport, WebRTC, workers, popups) turned out
-// to need its own fence with its own gaps. So the render context has
-// JavaScript off (see captureThumbnail), which removes that whole class. A
+// to need its own fence with its own gaps. So the render runs with
+// JavaScript off (the first launch obligation above, backed by the context
+// setting in captureThumbnail), which removes that whole class. A
 // Markdown artifact's mermaid fences are drawn in a separate browser that
 // runs only Mermaid, with no network at all (ADR-0010), and swapped into the
 // page before the screenshot.
 //
 // What remains is declarative loads (img, iframe, stylesheet, meta refresh),
-// fenced twice. The runtime launches the browser with a fence of its own
-// that stops every connection, from any page or frame, to anywhere but the
-// render origin (on Node, a proxy nobody listens on; see
-// playwright-renderer.ts). This request filter then narrows the one allowed
-// origin to GETs, which keeps /mcp out of reach even from a form.
+// fenced twice. The launch fence (the second obligation above; on Node, a
+// proxy nobody listens on) stops every connection to anywhere but the render
+// host. This request filter then narrows that to GETs on the render origin,
+// which keeps /mcp out of reach even from a form.
 //
 // A GET under the public base URL names this same server by the address
 // visitors use, which the renderer may not be able to reach. It never goes
 // to the network: the filter answers it with a redirect to the same path and
 // query on the render origin, so the embed shows and the render still loads
 // only from its own origin. Chromium follows that redirect as a GET, which
-// Playwright does not route again; its target is the one origin the launch
+// Playwright does not route again; its target is on the one host the launch
 // fence lets through.
 async function confineToOrigin(
   context: BrowserContext,
@@ -178,7 +186,9 @@ export type CaptureOptions = {
 export type CaptureHooks = {
   // The deadline passed while the browser itself was working. Not called for
   // a deadline passed while drawing diagrams: that wait is on the Mermaid
-  // renderer, which counts it against its own browser.
+  // renderer, which counts it against its own browser when one was drawing,
+  // and against neither while that browser is still launching (a slow launch
+  // is not a stuck browser).
   missed: () => void;
   // The render finished before its deadline, with bytes or a decline.
   rendered: () => void;
@@ -215,8 +225,14 @@ async function capture(
   return new Uint8Array(shot);
 }
 
+// Whether a render is worth starting: headless Chromium downloads a PDF
+// instead of drawing it. A runtime checks this before it launches a browser.
+export function canCapture(target: ThumbnailTarget): boolean {
+  return target.mediaType !== 'application/pdf';
+}
+
 // Renders one artifact in `browser` and resolves to JPEG bytes, or null when
-// the server did not serve the artifact. Each render gets its own short-lived
+// it cannot be captured (see canCapture) or the server did not serve it. Each render gets its own short-lived
 // context, so no cookies, cache, or storage carry over from one artifact to
 // the next. Rejects when the deadline passes or the browser fails.
 //
@@ -234,6 +250,9 @@ export async function captureThumbnail(
   { mermaid, publicBaseUrl, report, timeoutMs }: CaptureOptions,
   hooks: CaptureHooks,
 ): Promise<Uint8Array | null> {
+  if (!canCapture(target)) {
+    return null;
+  }
   const origin = new URL(target.url).origin;
   const deadlineReached = new AbortController();
   const deadline = setTimeout(() => {
@@ -246,8 +265,9 @@ export async function captureThumbnail(
     colorScheme: 'dark',
     deviceScaleFactor: DEVICE_SCALE_FACTOR,
     // See confineToOrigin: a preview is the static document, scripts off.
-    // This is the per-page CDP switch, applied after a frame exists; a
-    // runtime that can also turn scripts off at launch does (Node does).
+    // This is the per-page CDP switch, applied after a frame exists. It does
+    // not cover a sandboxed srcdoc frame in its own process; the launch-time
+    // setting (the first obligation in the header) is what guarantees it.
     javaScriptEnabled: false,
     viewport: VIEWPORT,
   });

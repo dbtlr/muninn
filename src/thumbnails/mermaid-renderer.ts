@@ -23,8 +23,8 @@ import type { MermaidRenderer } from './types.js';
 // docs/decisions/0010-thumbnail-mermaid-renderer.md). Artifact pages render
 // with scripts off, so a mermaid fence there would show as its source; this
 // draws the fences' text separately, in a browser that runs scripts but has
-// no network at all, and playwright-renderer.ts swaps the SVGs into the
-// preview before its screenshot.
+// no network at all, and capture.ts swaps the SVGs into the preview before
+// its screenshot.
 //
 // The page holds Mermaid's single-file bundle and nothing else. Diagram text
 // enters only as an argument to Muninn's own evaluate call: Muninn never

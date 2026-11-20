@@ -3,7 +3,7 @@ import { access } from 'node:fs/promises';
 import type { Browser } from 'playwright-core';
 import { chromium } from 'playwright-core';
 
-import { captureThumbnail } from './capture.js';
+import { canCapture, captureThumbnail } from './capture.js';
 import {
   BASE_CHROMIUM_ARGS,
   createBrowserSlot,
@@ -84,9 +84,8 @@ export function proxyFencedTo(origin: string): { bypass: string; server: string 
 }
 
 // One shared headless Chromium, launched on first use and replaced after a
-// crash or once it stops answering (see createBrowserSlot). Each render gets
-// its own short-lived context, so no cookies, cache, or storage carry over
-// from one artifact to the next. A first launch that fails (no Chromium on
+// crash or once it stops answering (see createBrowserSlot). Each render runs
+// under the shared render rules in capture.ts. A first launch that fails (no Chromium on
 // this machine) is reported once; after that every render declines with null
 // and the gallery keeps its drawn placeholders. A relaunch that fails after a
 // browser has run is reported and declines that render only; the next render
@@ -162,8 +161,7 @@ export function createPlaywrightRenderer({
   }
 
   async function render(target: ThumbnailTarget): Promise<Uint8Array | null> {
-    // Headless Chromium downloads a PDF instead of drawing it.
-    if (disabled || target.mediaType === 'application/pdf') {
+    if (disabled || !canCapture(target)) {
       return null;
     }
     const launched = await currentBrowser(new URL(target.url).origin);
