@@ -4,7 +4,7 @@ title: ADR-0010 - Thumbnails draw Mermaid diagrams in a separate browser with no
 description: A Markdown artifact's mermaid fences are drawn for its gallery preview in a second Chromium that runs only Mermaid's bundle and has no network path; artifact pages keep scripts off.
 status: accepted
 created: 2026-11-19
-modified: 2026-11-19
+modified: 2026-11-20
 ---
 # ADR-0010 - Thumbnails draw Mermaid diagrams in a separate browser with no network
 
@@ -120,6 +120,7 @@ so it cannot run without network access.
   with a Chromium engine exploit, would run code on the host outside the network fences. Turning
   the JIT off narrows that surface but does not remove it. Diagrams come from the owner's own
   agents on a trusted network, the same trust boundary the renderer already assumes.
-- The Worker has no thumbnail renderer. A future Browser Rendering adapter that draws diagrams must
-  meet the same conditions: Muninn's bundle only, diagram text as data, and no network path from
-  the page that runs it.
+- The Worker's thumbnail renderer, on Cloudflare Browser Rendering
+  ([ADR-0009](0009-cloudflare-workers-profile.md)), does not draw diagrams yet, so its previews show
+  `mermaid` fences as source. When it does, it must meet the same conditions: Muninn's bundle only,
+  diagram text as data, and no network path from the page that runs it.

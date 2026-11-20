@@ -24,8 +24,9 @@
     },
   ],
   "r2_buckets": [{ "binding": "MUNINN_BUCKET" }],
-  // Cloudflare Browser Rendering, which draws gallery previews
-  // (src/thumbnails/browser-rendering-renderer.ts). It needs Workers Paid.
+  // Cloudflare Browser Rendering, for gallery previews. The renderer
+  // (src/thumbnails/browser-rendering-renderer.ts) exists, but nothing calls
+  // it yet; the next task wires it to the Worker.
   "browser": { "binding": "BROWSER" },
   // The Vite build output, served without auth. It holds only the stylesheet,
   // the client scripts, the icons, and Mermaid's single-file bundle for the

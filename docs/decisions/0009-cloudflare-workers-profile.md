@@ -36,7 +36,11 @@ network.
 - **Each request composes its own services.** The Worker builds the services and the app from the
   request's bindings, with no state kept in the isolate between requests. Composing is only object
   construction, and workerd does not let one request safely await I/O that another request
-  started, which a shared signing-key cache would do.
+  started, which a shared signing-key cache would do. One exception: the Browser Rendering
+  renderer keeps the ID of the session it launched, and that session's count of missed deadlines,
+  in the isolate, so later requests reuse the session. An ID and a count are not I/O objects, so
+  no request awaits I/O that another started: each request opens its own connection to the
+  session.
 - **The login limit reads `CF-Connecting-IP`.** Cloudflare sets that header itself, so the
   per-client limit of [ADR-0005](0005-per-client-login-limit.md) needs no operator setting on the
   Worker, and the Worker does not read `MUNINN_CLIENT_ADDRESS_HEADER`.
@@ -77,12 +81,16 @@ network.
   `@cloudflare/playwright`, under the same render rules as Node (`src/thumbnails/capture.ts`). The
   renderer is `src/thumbnails/browser-rendering-renderer.ts`. Until the Worker calls it from a
   queue or a scheduled run, every card shows its stored preview or the drawn placeholder. Browser
-  Rendering needs Workers Paid, the plan this profile already requires.
+  Rendering has its own limits on each plan, such as launches per minute and concurrent sessions.
+- Worker previews do not draw Mermaid diagrams yet: a Markdown artifact's `mermaid` fences show as
+  source until task ART-102 brings the diagram renderer of
+  [ADR-0010](0010-thumbnail-mermaid-renderer.md) to the Worker.
 - Browser Rendering cannot turn scripts off at launch, the first obligation that `capture.ts`
   names. Only the per-context switch turns them off, and a sandboxed `srcdoc` frame in its own
   process can run script before that switch applies. Such a script runs in a browser that holds no
-  owner session cookie and no API key, only the signed URL of the artifact being rendered, which
-  grants a `GET` of that one artifact. Every Worker route that changes state needs the owner's
+  owner session cookie and no API key, only signed URLs: the rendered artifact's own, and those of
+  the artifacts its page embeds, which the app signs for each view. Each grants a `GET` of one
+  artifact that the author chose to show. Every Worker route that changes state needs the owner's
   session (`/logout`, `/keys*`, `/secrets/new`), an API key (`/mcp`), or an unguessable token or
   key (`/s/upload/*`, `/s/download/*`, `/s/*/reveal`). `POST /login` is the only one open to anyone,
   and [ADR-0005](0005-per-client-login-limit.md) limits it per client address and in total. So the
@@ -96,12 +104,15 @@ network.
   hostname with another origin server would expose that origin's `GET` surface to a script that
   wins the race. The supported deploys are therefore a custom domain or `workers.dev`, not a route.
 - Browser Rendering limits launches per minute, and a launch takes about a second, so the renderer
-  reuses one session across renders and across Worker invocations. Only the session's ID is kept
-  in the isolate between requests, never a connection. The renderer reuses only a session it
-  launched itself: the account's session list may hold a session that another Worker launched
-  without guardrails. A refused launch or a lost session rejects with `RenderUnavailableError`, so
-  the caller can retry later. A render that resolves `null` still means the artifact has no
-  preview.
+  reuses one session across renders, and across Worker invocations within an isolate. Only the
+  session's ID and its count of missed deadlines are kept in the isolate between requests, never a
+  connection. The renderer reuses only a session it launched itself: the account's session list
+  may hold a session that another Worker launched without guardrails. As on Node, three renders in
+  a row that pass their deadline retire the session, which the renderer then ends over CDP. A
+  refused launch, a launch or reconnect that takes longer than 10 seconds, or a lost session
+  rejects with `RenderUnavailableError`, so the caller can retry later. Any other failure,
+  including a render that passes its deadline, rejects with a plain error. A render that resolves
+  `null` still means the artifact has no preview.
 - A Worker request that signs or checks a URL reads the hour's signing key from D1, rather than
   from a process cache that lasts the hour as [ADR-0004](0004-hourly-url-signing-keys.md) describes
   for Node.

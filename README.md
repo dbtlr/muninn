@@ -359,8 +359,9 @@ pnpm exec wrangler secret put MUNINN_PUBLIC_BASE_URL
   the header (error 1000), so a client cannot choose the address it counts against.
 - A Cron Trigger removes expired one-time secrets every 10 minutes.
 - Gallery previews will come from Cloudflare Browser Rendering, through the `BROWSER` binding in
-  `wrangler.jsonc`. Browser Rendering needs Workers Paid. The renderer exists, but the Worker does
-  not call it yet, so cards show the drawn placeholder. Deploy on `workers.dev` or a custom
+  `wrangler.jsonc`. Browser Rendering has its own limits on each plan, such as launches per minute.
+  The renderer exists, but the Worker does not call it yet, so cards show the drawn placeholder.
+  Its previews will not draw Mermaid diagrams at first: fences show as source. Deploy on `workers.dev` or a custom
   domain, not on a Workers route that shares its hostname with another server: the renderer's
   network allowlist matches hostnames only
   ([ADR-0009](docs/decisions/0009-cloudflare-workers-profile.md)).
