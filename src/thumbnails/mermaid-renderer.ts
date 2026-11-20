@@ -11,36 +11,26 @@ import { chromium } from 'playwright-core';
 
 import {
   BASE_CHROMIUM_ARGS,
-  closeQuietly,
-  closeWhenCreated,
   createBrowserSlot,
   DEAD_PROXY,
-  ignoreFailure,
   LAUNCH_TIMEOUT_MS,
   SIGNALS_LEFT_TO_SERVER,
-  untilAborted,
 } from './chromium-launch.js';
+import { closeQuietly, closeWhenCreated, ignoreFailure, untilAborted } from './settle.js';
+import type { MermaidRenderer } from './types.js';
 
 // Draws Mermaid diagrams for gallery previews (see
 // docs/decisions/0010-thumbnail-mermaid-renderer.md). Artifact pages render
 // with scripts off, so a mermaid fence there would show as its source; this
 // draws the fences' text separately, in a browser that runs scripts but has
-// no network at all, and playwright-renderer.ts swaps the SVGs into the
-// preview before its screenshot.
+// no network at all, and capture.ts swaps the SVGs into the preview before
+// its screenshot.
 //
 // The page holds Mermaid's single-file bundle and nothing else. Diagram text
 // enters only as an argument to Muninn's own evaluate call: Muninn never
 // inserts it as markup, and Mermaid parses it and sanitizes its labels under
 // `securityLevel: 'strict'`. The network isolation does not depend on Mermaid
 // being free of bugs; see mermaidLaunchOptions and MERMAID_CONTEXT_OPTIONS.
-export type MermaidRenderer = {
-  close: () => Promise<void>;
-  // One SVG per diagram text, in order. An entry is null where Mermaid could
-  // not draw that text, and every entry is null while Mermaid rendering is
-  // disabled (the bundle or Chromium is missing; reported once). Rejects when
-  // the signal aborts, and when the drawing itself fails.
-  render: (texts: readonly string[], signal?: AbortSignal) => Promise<(string | null)[]>;
-};
 
 type MermaidRendererOptions = {
   executablePath?: string | undefined;

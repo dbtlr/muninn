@@ -19,3 +19,15 @@ export type ThumbnailStore = {
   remove: (id: string) => Promise<void>;
   write: (id: string, bytes: Uint8Array) => Promise<void>;
 };
+
+// Draws a Markdown artifact's mermaid fences for its preview, in a browser of
+// its own with no network path (ADR-0010). The Node implementation is
+// mermaid-renderer.ts; capture.ts swaps the drawings into the page.
+export type MermaidRenderer = {
+  close: () => Promise<void>;
+  // One SVG per diagram text, in order. An entry is null where Mermaid could
+  // not draw that text, and every entry is null while Mermaid rendering is
+  // disabled (the bundle or Chromium is missing; reported once). Rejects when
+  // the signal aborts, and when the drawing itself fails.
+  render: (texts: readonly string[], signal?: AbortSignal) => Promise<(string | null)[]>;
+};

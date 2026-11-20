@@ -8,6 +8,7 @@ import type { Plugin } from 'vite';
 
 import { MIGRATIONS_DIR } from './src/migrations-dir.js';
 import { THUMBNAIL_MERMAID_BUNDLE } from './src/thumbnails/mermaid-bundle.js';
+import { FORBIDDEN_MODULES } from './src/worker-forbidden-modules.js';
 
 // Copies Mermaid's single-file bundle into the build for the thumbnail
 // renderer (src/thumbnails/mermaid-renderer.ts), which draws diagrams in a
@@ -92,6 +93,44 @@ export default defineConfig({
           // with node:sqlite's synchronous DatabaseSync, not async I/O we
           // forgot to await.
           { files: ['src/data/**/*.ts'], rules: { 'node/no-sync': 'off' } },
+          // The thumbnail render rules both runtimes share. The Worker
+          // bundle must be able to reach them (ADR-0009). Rather than track
+          // which Node built-ins workerd provides, they take only types from
+          // Node, Playwright, and the Node-only renderer modules, and must
+          // spell built-ins with the node: prefix so the pattern sees them.
+          {
+            files: [
+              'src/thumbnails/capture.ts',
+              'src/thumbnails/settle.ts',
+              'src/thumbnails/types.ts',
+            ],
+            rules: {
+              'no-restricted-imports': [
+                'error',
+                {
+                  patterns: [
+                    {
+                      allowTypeImports: true,
+                      group: [
+                        // Every Node built-in, then the modules the Worker
+                        // bundle check forbids, each with its subpaths.
+                        'node:*',
+                        'node:*/**',
+                        ...FORBIDDEN_MODULES.flatMap((name) => [name, `${name}/**`]),
+                        // Any extension: the tsconfig allows importing .ts.
+                        '**/chromium-launch.*',
+                        '**/mermaid-renderer.*',
+                        '**/playwright-renderer.*',
+                      ],
+                      message:
+                        'Worker-reachable thumbnail code may import only types from Node-only modules.',
+                    },
+                  ],
+                },
+              ],
+              'unicorn/prefer-node-protocol': 'error',
+            },
+          },
         ],
       },
       node: true,
