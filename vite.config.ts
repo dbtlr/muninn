@@ -114,9 +114,11 @@ export default defineConfig({
                         'node:*',
                         'node:*/**',
                         'playwright-core',
-                        '**/chromium-launch.js',
-                        '**/mermaid-renderer.js',
-                        '**/playwright-renderer.js',
+                        'playwright-core/**',
+                        // Any extension: the tsconfig allows importing .ts.
+                        '**/chromium-launch.*',
+                        '**/mermaid-renderer.*',
+                        '**/playwright-renderer.*',
                       ],
                       message:
                         'Worker-reachable thumbnail code may import only types from Node-only modules.',
