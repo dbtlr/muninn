@@ -312,7 +312,15 @@ export async function captureThumbnail(
     throw error;
   }
   clearTimeout(deadline);
-  hooks.rendered();
+  try {
+    hooks.rendered();
+  } catch (error) {
+    // The hook's failure is the one to report, not a failed close after it.
+    if (context !== undefined) {
+      await closeQuietly(context);
+    }
+    throw error;
+  }
   await context?.close();
   return captured;
 }
