@@ -7,25 +7,14 @@ import { promisify } from 'node:util';
 
 import { z } from 'zod';
 
+import { FORBIDDEN_MODULES } from '../src/worker-forbidden-modules.js';
+
 // Builds the Cloudflare Worker without deploying it and fails if its bundle
 // reaches a Node-only module (ADR-0009). It sees modules reachable through
 // static imports and dynamic imports of a literal specifier. It does not see
 // modules resolved at run time, such as through process.getBuiltinModule,
 // createRequire, or a computed import(). It exists to catch an accidental
 // Node-only dependency, not deliberate evasion.
-
-// Modules that exist only for the Node profile. workerd stubs
-// node:sqlite and provides node:fs, so a Worker that loads one of these still
-// starts, and a test under workerd does not notice; only the built bundle
-// shows that the Worker reached them.
-export const FORBIDDEN_MODULES = [
-  'node:sqlite',
-  'node:fs',
-  'node:fs/promises',
-  'umzug',
-  '@hono/node-server',
-  'playwright-core',
-] as const;
 
 // The parts of esbuild's metafile, which wrangler writes for the bundle,
 // that the check reads: every source file bundled in, and each output's

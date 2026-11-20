@@ -6,9 +6,9 @@ import { defineConfig, toolingPlugin } from '@dbtlr/tooling';
 import tailwindcss from '@tailwindcss/vite';
 import type { Plugin } from 'vite';
 
-import { FORBIDDEN_MODULES } from './scripts/check-worker-bundle.js';
 import { MIGRATIONS_DIR } from './src/migrations-dir.js';
 import { THUMBNAIL_MERMAID_BUNDLE } from './src/thumbnails/mermaid-bundle.js';
+import { FORBIDDEN_MODULES } from './src/worker-forbidden-modules.js';
 
 // Copies Mermaid's single-file bundle into the build for the thumbnail
 // renderer (src/thumbnails/mermaid-renderer.ts), which draws diagrams in a
