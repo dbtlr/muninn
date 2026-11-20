@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 
 import {
   createBrowserRenderingRenderer,
+  endSession,
   RenderUnavailableError,
 } from './browser-rendering-renderer.js';
 import type {
@@ -73,10 +74,19 @@ type FakeSession = {
   ended: boolean;
   // Whether CDP's Browser.close goes unanswered, as from a stuck browser.
   ignoresBrowserClose: boolean;
+  // close() never settles, as Playwright's does on a launched browser whose
+  // Browser.close goes unanswered.
+  closeHangs: boolean;
 };
 
 function newSession(): FakeSession {
-  return { behaviour: 'draws', contexts: [], ended: false, ignoresBrowserClose: false };
+  return {
+    behaviour: 'draws',
+    closeHangs: false,
+    contexts: [],
+    ended: false,
+    ignoresBrowserClose: false,
+  };
 }
 
 // A fake browser's handles for the test: the browser itself, how many times
@@ -115,14 +125,17 @@ function fakeConnection(
       }
     }
   };
-  const endSession = (): void => {
+  const markEnded = (): void => {
     session.ended = true;
   };
   const browser = {
     close: vi.fn(async () => {
       closeCount += 1;
+      if (session.closeHangs) {
+        await Promise.withResolvers<never>().promise;
+      }
       if (launched) {
-        endSession();
+        markEnded();
       }
       await tick();
       drop();
@@ -139,7 +152,7 @@ function fakeConnection(
             await Promise.withResolvers<never>().promise;
           }
           if (method === 'Browser.close') {
-            endSession();
+            markEnded();
             setTimeout(drop, 0);
           }
           return {};
@@ -176,7 +189,7 @@ function fakeConnection(
                 await Promise.withResolvers<never>().promise;
               }
               if (behaviour === 'loses its target') {
-                endSession();
+                markEnded();
                 setTimeout(drop, DISCONNECT_LAG_MS);
                 throw new Error(`page.goto: net::ERR_ABORTED at ${url}`);
               }
@@ -640,6 +653,25 @@ describe('createBrowserRenderingRenderer', () => {
     expect(connectionAt(0).closes()).toBe(0);
     await vi.advanceTimersByTimeAsync(1);
     expect(connectionAt(0).closes()).toBe(1);
+  });
+
+  it('finishes ending a session whose Browser.close and close() both go unanswered', async () => {
+    vi.useFakeTimers();
+    const { connectionAt, launchSession, sessionNamed } = fakeBrowserRendering();
+    launchSession();
+    sessionNamed('launched-1').ignoresBrowserClose = true;
+    sessionNamed('launched-1').closeHangs = true;
+    let ended = false;
+    void (async () => {
+      await endSession(connectionAt(0).browser);
+      ended = true;
+    })();
+
+    await vi.advanceTimersByTimeAsync(3999);
+    expect(ended).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(connectionAt(0).closes()).toBe(1);
+    expect(ended).toBe(true);
   });
 
   it('starts the count of missed deadlines over after a render that finishes', async () => {

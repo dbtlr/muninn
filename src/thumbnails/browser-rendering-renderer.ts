@@ -197,8 +197,11 @@ async function acquiredInTime(
 // drops the connection (only launch() makes it end the session), so the
 // session is first ended over CDP. Best effort: a browser stuck enough to
 // retire may not answer, and Browser Rendering ends the session anyway once
-// its keep-alive runs out.
-async function endSession(browser: RenderingBrowser): Promise<void> {
+// its keep-alive runs out. Both steps are bounded, since close() on a
+// launched browser sends Browser.close again and waits for `disconnected`
+// with no limit; past the bound there is nothing more to release, and the
+// connection goes with the invocation. Exported for its tests.
+export async function endSession(browser: RenderingBrowser): Promise<void> {
   const closing = (async () => {
     const cdp = await browser.newBrowserCDPSession();
     await cdp.send('Browser.close');
@@ -206,7 +209,9 @@ async function endSession(browser: RenderingBrowser): Promise<void> {
   await ignoreFailure(
     within(closing, END_SESSION_TIMEOUT_MS, 'Browser.close was not answered in time'),
   );
-  await browser.close();
+  await ignoreFailure(
+    within(browser.close(), END_SESSION_TIMEOUT_MS, 'close() did not finish in time'),
+  );
 }
 
 // Renders on one Browser Rendering session at a time: the one `session`
