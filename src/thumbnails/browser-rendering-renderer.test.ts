@@ -71,10 +71,12 @@ type FakeSession = {
   behaviour: Behaviour;
   // Set once Browser.close ended the session; it can no longer be connected.
   ended: boolean;
+  // Whether CDP's Browser.close goes unanswered, as from a stuck browser.
+  ignoresBrowserClose: boolean;
 };
 
 function newSession(): FakeSession {
-  return { behaviour: 'draws', contexts: [], ended: false };
+  return { behaviour: 'draws', contexts: [], ended: false, ignoresBrowserClose: false };
 }
 
 // A fake browser's handles for the test: the browser itself, how many times
@@ -131,6 +133,9 @@ function fakeConnection(
       return {
         detach: async () => {},
         send: async (method: string) => {
+          if (method === 'Browser.close' && session.ignoresBrowserClose) {
+            await Promise.withResolvers<never>().promise;
+          }
           if (method === 'Browser.close') {
             endSession();
             setTimeout(drop, 0);
@@ -233,16 +238,18 @@ function fakeBrowserRendering() {
     connections.push(connection);
     return connection.browser;
   };
+  // A connection to the session `sessionId`, as connect() makes.
+  const connectSession = (sessionId: string): RenderingBrowser => {
+    const session = sessions.get(sessionId);
+    if (session === undefined || session.ended) {
+      throw new Error(`Unable to connect to browser: code: 404: session ${sessionId}`);
+    }
+    const connection = fakeConnection(sessionId, session, { launched: false });
+    connections.push(connection);
+    return connection.browser;
+  };
   const api = {
-    connect: vi.fn(async (_binding: unknown, sessionId: string) => {
-      const session = sessions.get(sessionId);
-      if (session === undefined || session.ended) {
-        throw new Error(`Unable to connect to browser: code: 404: session ${sessionId}`);
-      }
-      const connection = fakeConnection(sessionId, session, { launched: false });
-      connections.push(connection);
-      return connection.browser;
-    }),
+    connect: vi.fn(async (_binding: unknown, sessionId: string) => connectSession(sessionId)),
     launch: vi.fn(async (_binding: unknown, _options: unknown) => launchSession()),
     // Never to be called: another Worker on the account may have launched
     // these without guardrails.
@@ -266,7 +273,7 @@ function fakeBrowserRendering() {
     return found;
   }
 
-  return { api, connectionAt, launchSession, sessionNamed };
+  return { api, connectSession, connectionAt, launchSession, sessionNamed };
 }
 
 const BINDING = { fetch: async () => new Response(null, { status: 500 }) };
@@ -497,6 +504,35 @@ describe('createBrowserRenderingRenderer', () => {
     expect(error).toHaveProperty('message', expect.stringContaining(TARGET_CLOSED));
   });
 
+  it('keeps the connection a render opened after close() when an earlier render loses its own', async () => {
+    const { api, connectSession, sessionNamed } = fakeBrowserRendering();
+    const losing = renderer(api);
+    await losing.render(HTML_TARGET);
+    const launched = sessionNamed('launched-1');
+    launched.behaviour = 'disconnects';
+    // The replacement's reconnect settles after the earlier render has
+    // lost its connection; the session then draws again.
+    api.connect.mockImplementationOnce(async (_binding, sessionId) => {
+      await tick();
+      launched.behaviour = 'draws';
+      return connectSession(sessionId);
+    });
+
+    const lost = rejectionOf(losing.render(HTML_TARGET));
+    // close() and a replacement render land as the earlier render's
+    // connection arrives.
+    let replacement: Promise<Uint8Array | null> | undefined;
+    queueMicrotask(() => {
+      void losing.close();
+      replacement = losing.render(HTML_TARGET);
+    });
+
+    await expect(lost).resolves.toBeInstanceOf(RenderUnavailableError);
+    await expect(replacement).resolves.toEqual(JPEG);
+    await expect(losing.render(HTML_TARGET)).resolves.toEqual(JPEG);
+    expect(api.connect).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects with a plain error when a render fails on a browser that is still there', async () => {
     const { api, sessionNamed } = fakeBrowserRendering();
     const failing = renderer(api);
@@ -551,7 +587,7 @@ describe('createBrowserRenderingRenderer', () => {
 
     expect(third).not.toBeInstanceOf(RenderUnavailableError);
     expect(third).toHaveProperty('message', expect.stringMatching(/deadline/u));
-    expect(memory.id).toBeUndefined();
+    expect(memory).toEqual({ id: undefined, misses: 0 });
     // A reconnected browser's close() only drops the connection, so the
     // session itself is ended too.
     await tick();
@@ -559,6 +595,31 @@ describe('createBrowserRenderingRenderer', () => {
     await expect(second.render(HTML_TARGET)).resolves.toEqual(JPEG);
     expect(api.launch).toHaveBeenCalledTimes(2);
     expect(memory.id).toBe('launched-2');
+  });
+
+  it('drops the connection of a retired session whose Browser.close goes unanswered', async () => {
+    vi.useFakeTimers();
+    const { api, connectionAt, sessionNamed } = fakeBrowserRendering();
+    const slow = renderer(api, emptyMemory(), DEADLINE_MS);
+    await slow.render(HTML_TARGET);
+    const launched = sessionNamed('launched-1');
+    launched.behaviour = 'hangs';
+    launched.ignoresBrowserClose = true;
+    const missDeadline = async (): Promise<void> => {
+      const failure = rejectionOf(slow.render(HTML_TARGET));
+      await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+      await failure;
+    };
+    await missDeadline();
+    await missDeadline();
+    await missDeadline();
+
+    // Retired at the third miss: it waits two seconds for Browser.close,
+    // then drops the connection regardless.
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(connectionAt(0).closes()).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(connectionAt(0).closes()).toBe(1);
   });
 
   it('starts the count of missed deadlines over after a render that finishes', async () => {
