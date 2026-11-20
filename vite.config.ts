@@ -6,6 +6,7 @@ import { defineConfig, toolingPlugin } from '@dbtlr/tooling';
 import tailwindcss from '@tailwindcss/vite';
 import type { Plugin } from 'vite';
 
+import { FORBIDDEN_MODULES } from './scripts/check-worker-bundle.js';
 import { MIGRATIONS_DIR } from './src/migrations-dir.js';
 import { THUMBNAIL_MERMAID_BUNDLE } from './src/thumbnails/mermaid-bundle.js';
 
@@ -111,10 +112,11 @@ export default defineConfig({
                     {
                       allowTypeImports: true,
                       group: [
+                        // Every Node built-in, then the modules the Worker
+                        // bundle check forbids, each with its subpaths.
                         'node:*',
                         'node:*/**',
-                        'playwright-core',
-                        'playwright-core/**',
+                        ...FORBIDDEN_MODULES.flatMap((name) => [name, `${name}/**`]),
                         // Any extension: the tsconfig allows importing .ts.
                         '**/chromium-launch.*',
                         '**/mermaid-renderer.*',
