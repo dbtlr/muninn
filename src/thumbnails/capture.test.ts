@@ -70,6 +70,23 @@ const throwingHooks = {
 };
 
 describe('captureThumbnail', () => {
+  it.each<CloseBehaviour>(['fails', 'hangs'])(
+    'returns the preview of a render that finishes when closing its context %s',
+    async (closing) => {
+      const { browser, contextCloses } = drawingBrowser(closing);
+
+      const bytes = await captureThumbnail(
+        browser,
+        TARGET,
+        { report: () => {}, timeoutMs: 1000 },
+        { missed: vi.fn(), rendered: () => {} },
+      );
+
+      expect(bytes).toEqual(Uint8Array.of(255, 216, 255));
+      expect(contextCloses()).toBe(1);
+    },
+  );
+
   it("closes the render's context after a render that finishes", async () => {
     const { browser, contextCloses } = drawingBrowser();
 

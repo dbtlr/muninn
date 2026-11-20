@@ -324,6 +324,10 @@ export async function captureThumbnail(
     }
     throw error;
   }
-  await context?.close();
+  // The render is done and its deadline cleared, so a close that fails or
+  // never settles must not hold back or replace the preview.
+  if (context !== undefined) {
+    void closeQuietly(context);
+  }
   return captured;
 }
