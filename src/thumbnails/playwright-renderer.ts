@@ -85,8 +85,8 @@ export function proxyFencedTo(origin: string): { bypass: string; server: string 
 
 // One shared headless Chromium, launched on first use and replaced after a
 // crash or once it stops answering (see createBrowserSlot). Each render runs
-// under the shared render rules in capture.ts. A first launch that fails (no Chromium on
-// this machine) is reported once; after that every render declines with null
+// under the shared render rules in capture.ts. A first launch that fails (no
+// Chromium on this machine) is reported once; after that every render declines with null
 // and the gallery keeps its drawn placeholders. A relaunch that fails after a
 // browser has run is reported and declines that render only; the next render
 // launches again.

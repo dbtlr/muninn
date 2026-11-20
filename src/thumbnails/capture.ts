@@ -13,8 +13,10 @@ import type { MermaidRenderer, ThumbnailTarget } from './types.js';
 //   switch set here is applied after a frame exists, and a sandboxed srcdoc
 //   frame in a process of its own can run script before it applies.
 // - A network fence below the browser that lets connections reach only the
-//   render host, from any page or frame. The request filter here cannot see
-//   WebSockets or every request from a sandboxed frame.
+//   render origin's host and port, from any page or frame. The request
+//   filter here cannot see WebSockets or every request from a sandboxed
+//   frame, so a fence that admits the whole host lets such a frame reach
+//   other services on it.
 // A runtime that cannot meet one of them must close that gap another way.
 // Type imports only from Playwright and Node: the Worker bundle must be able
 // to reach this file, and the lint config enforces it.
@@ -49,7 +51,7 @@ function imagePage(url: string): string {
 // What remains is declarative loads (img, iframe, stylesheet, meta refresh),
 // fenced twice. The launch fence (the second obligation above; on Node, a
 // proxy nobody listens on) stops every connection to anywhere but the render
-// host. This request filter then narrows that to GETs on the render origin,
+// origin's host and port. This request filter then narrows that to GETs,
 // which keeps /mcp out of reach even from a form.
 //
 // A GET under the public base URL names this same server by the address
@@ -57,8 +59,8 @@ function imagePage(url: string): string {
 // to the network: the filter answers it with a redirect to the same path and
 // query on the render origin, so the embed shows and the render still loads
 // only from its own origin. Chromium follows that redirect as a GET, which
-// Playwright does not route again; its target is on the one host the launch
-// fence lets through.
+// Playwright does not route again; its target is the one host and port the
+// launch fence lets through.
 async function confineToOrigin(
   context: BrowserContext,
   origin: string,
@@ -232,9 +234,9 @@ export function canCapture(target: ThumbnailTarget): boolean {
 }
 
 // Renders one artifact in `browser` and resolves to JPEG bytes, or null when
-// it cannot be captured (see canCapture) or the server did not serve it. Each render gets its own short-lived
-// context, so no cookies, cache, or storage carry over from one artifact to
-// the next. Rejects when the deadline passes or the browser fails.
+// it cannot be captured (see canCapture) or the server did not serve it.
+// Each render gets its own short-lived context, so no cookies, cache, or
+// storage carry over from one artifact to the next. Rejects when the deadline passes or the browser fails.
 //
 // One deadline covers the whole render, context creation included, raced
 // against the work rather than enforced by closing the context: Playwright
