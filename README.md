@@ -358,7 +358,12 @@ pnpm exec wrangler secret put MUNINN_PUBLIC_BASE_URL
   `MUNINN_CLIENT_ADDRESS_HEADER` is not read. Cloudflare refuses a request that already carries
   the header (error 1000), so a client cannot choose the address it counts against.
 - A Cron Trigger removes expired one-time secrets every 10 minutes.
-- Gallery previews stay as placeholders. The Worker has no preview renderer yet.
+- Gallery previews will come from Cloudflare Browser Rendering, through the `BROWSER` binding in
+  `wrangler.jsonc`. Browser Rendering needs Workers Paid. The renderer exists, but the Worker does
+  not call it yet, so cards show the drawn placeholder. Deploy on `workers.dev` or a custom
+  domain, not on a Workers route that shares its hostname with another server: the renderer's
+  network allowlist matches hostnames only
+  ([ADR-0009](docs/decisions/0009-cloudflare-workers-profile.md)).
 
 To run the Worker locally, put both settings in an ignored `.dev.vars` file, apply the migrations
 with `pnpm exec wrangler d1 migrations apply MUNINN_DB --local`, and run `pnpm worker:dev`.

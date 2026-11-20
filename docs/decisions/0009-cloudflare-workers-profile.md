@@ -4,7 +4,7 @@ title: ADR-0009 - Muninn also runs as a Cloudflare Worker, from the same package
 description: A second deployment profile runs Muninn as a Cloudflare Worker on D1, R2, and Static Assets. Both profiles share one package and one core and differ only in their entry point and adapters. The Worker always requires the owner password.
 status: accepted
 created: 2026-10-27
-modified: 2026-10-27
+modified: 2026-11-20
 ---
 # ADR-0009 - Muninn also runs as a Cloudflare Worker, from the same package, with owner auth required
 
@@ -73,7 +73,35 @@ network.
 
 - Workers Paid is the supported plan. On the free plan, a request is limited to 10 ms of CPU, and
   rendering a Markdown artifact of a few kilobytes or more when it is saved exceeds that.
-- Gallery previews stay as placeholders on the Worker until a Browser Rendering adapter exists.
+- Gallery previews on the Worker come from Cloudflare Browser Rendering, through
+  `@cloudflare/playwright`, under the same render rules as Node (`src/thumbnails/capture.ts`). The
+  renderer is `src/thumbnails/browser-rendering-renderer.ts`. Until the Worker calls it from a
+  queue or a scheduled run, every card shows its stored preview or the drawn placeholder. Browser
+  Rendering needs Workers Paid, the plan this profile already requires.
+- Browser Rendering cannot turn scripts off at launch, the first obligation that `capture.ts`
+  names. Only the per-context switch turns them off, and a sandboxed `srcdoc` frame in its own
+  process can run script before that switch applies. Such a script runs in a browser that holds no
+  owner session cookie and no API key, only the signed URL of the artifact being rendered, which
+  grants a `GET` of that one artifact. Every Worker route that changes state needs the owner's
+  session (`/logout`, `/keys*`, `/secrets/new`), an API key (`/mcp`), or an unguessable token or
+  key (`/s/upload/*`, `/s/download/*`, `/s/*/reveal`). `POST /login` is the only one open to anyone,
+  and [ADR-0005](0005-per-client-login-limit.md) limits it per client address and in total. So the
+  script reaches only what an anonymous internet client reaches.
+- Browser Rendering's network fence is hostname-only, the second obligation's gap. Each session is
+  launched with guardrails, an egress allowlist that Cloudflare latches for the session's life, set
+  to the host of `MUNINN_PUBLIC_BASE_URL` alone. Guardrails match hostnames, not ports, methods, or
+  paths, and the request filter in `capture.ts` cannot see WebSockets. On `workers.dev` or a custom
+  domain bound to the Worker, every port that Cloudflare serves for the hostname reaches this same
+  Worker, so admitting every port reaches no other service. A Workers route that shares its
+  hostname with another origin server would expose that origin's `GET` surface to a script that
+  wins the race. The supported deploys are therefore a custom domain or `workers.dev`, not a route.
+- Browser Rendering limits launches per minute, and a launch takes about a second, so the renderer
+  reuses one session across renders and across Worker invocations. Only the session's ID is kept
+  in the isolate between requests, never a connection. The renderer reuses only a session it
+  launched itself: the account's session list may hold a session that another Worker launched
+  without guardrails. A refused launch or a lost session rejects with `RenderUnavailableError`, so
+  the caller can retry later. A render that resolves `null` still means the artifact has no
+  preview.
 - A Worker request that signs or checks a URL reads the hour's signing key from D1, rather than
   from a process cache that lasts the hour as [ADR-0004](0004-hourly-url-signing-keys.md) describes
   for Node.
