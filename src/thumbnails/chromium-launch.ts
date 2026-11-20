@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 
 import type { Browser } from 'playwright-core';
 
+import { MISSES_BEFORE_REPLACING } from './capture.js';
 import { ignoreFailure, untilAborted } from './settle.js';
 
 // Launch settings and helpers both thumbnail browsers share: the artifact
@@ -37,11 +38,6 @@ export const SIGNALS_LEFT_TO_SERVER = {
 // default is 180 s, all of it spent ahead of any render's deadline; a cold
 // disk can still need tens of seconds.
 export const LAUNCH_TIMEOUT_MS = 60_000;
-
-// Consecutive renders that may pass their deadline on one browser before it
-// is taken for stuck and replaced. More than one, so a single slow artifact
-// does not cost a relaunch.
-export const MISSES_BEFORE_REPLACING = 3;
 
 // How long the launch may take to report the browser's process; most of a
 // slow host's launch budget, since the render that launched the browser waits

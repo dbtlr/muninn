@@ -1,12 +1,13 @@
-import type { BrowserContext } from 'playwright-core';
-
 // Promise helpers for settling thumbnail work on a deadline without waiting
 // on a browser that may never answer. capture.ts uses them, so the Worker
 // bundle must be able to reach this file: type imports only.
 
-// Closes a render's context, ignoring one that a deadline or crash already
-// closed.
-export async function closeQuietly(context: BrowserContext): Promise<void> {
+// A browser or context: anything a render opens and must close.
+type Closable = { close: () => Promise<void> };
+
+// Closes a render's context or browser, ignoring one that a deadline or
+// crash already closed.
+export async function closeQuietly(context: Closable): Promise<void> {
   try {
     await context.close();
   } catch {
@@ -14,8 +15,9 @@ export async function closeQuietly(context: BrowserContext): Promise<void> {
   }
 }
 
-// Closes a context whose creation a render stopped waiting for, once it exists.
-export async function closeWhenCreated(creating: Promise<BrowserContext>): Promise<void> {
+// Closes a context or browser whose creation a render stopped waiting for,
+// once it exists.
+export async function closeWhenCreated(creating: Promise<Closable>): Promise<void> {
   try {
     await closeQuietly(await creating);
   } catch {

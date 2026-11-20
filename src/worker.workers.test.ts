@@ -65,8 +65,15 @@ function stubAssets() {
   };
 }
 
+// No request renders a preview, so Browser Rendering is never called.
+const NO_BROWSER = {
+  fetch: () => {
+    throw new Error('Browser Rendering is not available in tests');
+  },
+};
+
 function workerEnv(overrides: Partial<Record<string, unknown>> = {}): WorkerEnv {
-  return { ...env, ASSETS: stubAssets(), ...overrides };
+  return { ...env, ASSETS: stubAssets(), BROWSER: NO_BROWSER, ...overrides };
 }
 
 async function call(path: string, init: RequestInit = {}, testEnv = workerEnv()) {

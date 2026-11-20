@@ -93,13 +93,15 @@ export default defineConfig({
           // with node:sqlite's synchronous DatabaseSync, not async I/O we
           // forgot to await.
           { files: ['src/data/**/*.ts'], rules: { 'node/no-sync': 'off' } },
-          // The thumbnail render rules both runtimes share. The Worker
-          // bundle must be able to reach them (ADR-0009). Rather than track
-          // which Node built-ins workerd provides, they take only types from
-          // Node, Playwright, and the Node-only renderer modules, and must
-          // spell built-ins with the node: prefix so the pattern sees them.
+          // The thumbnail render rules both runtimes share, and the Worker's
+          // Browser Rendering renderer. The Worker bundle must be able to
+          // reach them (ADR-0009). Rather than track which Node built-ins
+          // workerd provides, they take only types from Node, Playwright,
+          // and the Node-only renderer modules, and must spell built-ins
+          // with the node: prefix so the pattern sees them.
           {
             files: [
+              'src/thumbnails/browser-rendering-renderer.ts',
               'src/thumbnails/capture.ts',
               'src/thumbnails/settle.ts',
               'src/thumbnails/types.ts',
