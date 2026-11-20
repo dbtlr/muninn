@@ -167,8 +167,14 @@ export async function ownedProcessGroup(pid: number): Promise<number | undefined
 }
 
 // The browser's process group, or undefined when the lookup fails or the
-// group is not one this server started (see ownedProcessGroup).
+// group is not one this server started (see ownedProcessGroup). With
+// SELENIUM_REMOTE_URL set, Playwright drives a browser on another machine:
+// its process id could still match a process in the other renderer's group,
+// which ownedProcessGroup would accept, so no group is taken at all.
 async function browserProcessGroup(browser: Browser): Promise<number | undefined> {
+  if ((process.env.SELENIUM_REMOTE_URL ?? '') !== '') {
+    return undefined;
+  }
   const pid = await browserProcessId(browser);
   return pid === undefined ? undefined : ownedProcessGroup(pid);
 }

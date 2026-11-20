@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import type { Browser } from 'playwright-core';
 import { chromium } from 'playwright-core';
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
 
 import {
   browserPid,
@@ -117,6 +118,38 @@ describe.skipIf(chromiumPath === undefined)('createBrowserSlot', { timeout: 60_0
       slot.missed(stuck);
       await expect(slot.acquire()).resolves.toBe(fresh);
     } finally {
+      killGroup(group);
+      await slot.close();
+    }
+  });
+
+  it('signals no local process group for a browser Playwright reached remotely', async () => {
+    // With SELENIUM_REMOTE_URL set, Playwright drives a browser on another
+    // machine, and the process id it reports names nothing of ours. The
+    // variable is set only once the local stand-in has launched.
+    const slot = createBrowserSlot(async () => {
+      const browser = await chromium.launch(LAUNCH_OPTIONS);
+      vi.stubEnv('SELENIUM_REMOTE_URL', 'http://grid.invalid:4444/wd/hub');
+      return browser;
+    });
+    let group: number | undefined;
+    try {
+      const remote = await slot.acquire();
+      const pid = await browserPid(remote);
+      group = await processGroupByPs(pid);
+      process.kill(pid, 'SIGSTOP');
+
+      slot.missed(remote);
+      slot.missed(remote);
+      slot.missed(remote);
+
+      // Replaced, but left alone: its group is still there.
+      vi.unstubAllEnvs();
+      await expect(slot.acquire()).resolves.not.toBe(remote);
+      await delay(1000);
+      expect(groupRemains(group)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
       killGroup(group);
       await slot.close();
     }
